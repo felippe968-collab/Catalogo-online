@@ -394,6 +394,24 @@ a{color:inherit;text-decoration:none;}
 .chart-bar-value{position:absolute;top:-20px;left:50%;transform:translateX(-50%);font-size:11px;font-weight:700;color:var(--text);}
 .chart-title{font-size:15px;font-weight:700;margin-bottom:16px;}
 </style>
+<!-- Supabase SDK -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+// ============ SUPABASE CONFIG ============
+const SUPABASE_CONFIG = {
+  url: 'COLE_AQUI_SUA_URL_DO_SUPABASE',  // ex: https://xxxxx.supabase.co
+  anonKey: 'COLE_AQUI_SUA_ANON_KEY'       // ex: eyJhbGciOi...
+};
+
+// Keys that stay in localStorage (per-browser, not shared)
+const LOCAL_KEYS = ['cart', 'favorites', 'currentClient'];
+
+const _supabase = (SUPABASE_CONFIG.url && SUPABASE_CONFIG.url !== 'COLE_AQUI_SUA_URL_DO_SUPABASE')
+  ? window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey)
+  : null;
+
+const SUPABASE_READY = !!_supabase;
+</script>
 </head>
 <body>
 
@@ -589,72 +607,216 @@ a{color:inherit;text-decoration:none;}
 <script>
 // ============ DATA LAYER (localStorage) ============
 const DB = {
-  _cache: {},
-  _db: null,
-  _migrating: true,
+  _cache: {},          // In-memory cache (loaded from Supabase on init)
+  _saveTimer: null,
+  _saveStatus: 'idle', // idle | saving | saved | error
+
   async init() {
+    document.body.style.opacity = '0';
+    document.body.style.transition = 'opacity .3s ease';
+
+    // Always load local keys from localStorage
+    LOCAL_KEYS.forEach(k => {
+      try {
+        const v = localStorage.getItem('cat_' + k);
+        if (v) this._cache[k] = JSON.parse(v);
+      } catch(e) {}
+    });
+
+    if (SUPABASE_READY) {
+      try {
+        showSyncBadge('connecting');
+        // Load all shared data from Supabase
+        const { data, error } = await _supabase
+          .from('catalog_data')
+          .select('key, value');
+
+        if (error) throw error;
+
+        if (data && data.length > 0) {
+          data.forEach(row => {
+            this._cache[row.key] = row.value;
+          });
+        } else {
+          // Supabase is empty — migrate from IndexedDB/localStorage
+          await this._migrateFromLocal();
+        }
+
+        // Also load local keys that might exist in old IndexedDB
+        showSyncBadge('connected');
+      } catch(err) {
+        console.error('Supabase load error:', err);
+        showSyncBadge('error');
+        // Fallback: try to load from IndexedDB
+        await this._loadFromIndexedDB();
+      }
+    } else {
+      // No Supabase configured — use IndexedDB as fallback
+      console.warn('Supabase not configured, using local storage');
+      await this._loadFromIndexedDB();
+    }
+  },
+
+  async _loadFromIndexedDB() {
     return new Promise((resolve) => {
-      if (!window.indexedDB) { console.warn("IndexedDB not supported, using in-memory"); resolve(); return; }
+      if (!window.indexedDB) { resolve(); return; }
       const req = indexedDB.open('catalogoDB_v2', 1);
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv', {keyPath: 'key'});
       };
       req.onsuccess = (e) => {
-        this._db = e.target.result;
-        // Load all existing data from IndexedDB
-        const tx = this._db.transaction('kv', 'readonly');
+        const db = e.target.result;
+        const tx = db.transaction('kv', 'readonly');
         const store = tx.objectStore('kv');
         const allReq = store.getAll();
         allReq.onsuccess = () => {
           (allReq.result || []).forEach(item => { this._cache[item.key] = item.value; });
-          // Migrate from localStorage if IndexedDB is empty
-          if (Object.keys(this._cache).length === 0) {
-            this._migrateFromLocalStorage();
-          }
-          this._migrating = false;
           resolve();
         };
-        allReq.onerror = () => { this._migrating = false; resolve(); };
+        allReq.onerror = () => resolve();
       };
       req.onerror = () => resolve();
     });
   },
-  _migrateFromLocalStorage() {
-    try {
-      Object.keys(localStorage).forEach(k => {
-        if (k.startsWith('cat_')) {
-          const key = k.replace('cat_', '');
-          const val = JSON.parse(localStorage.getItem(k));
-          this._cache[key] = val;
-          this.set(key, val);
-          localStorage.removeItem(k);
-        }
-      });
-    } catch(e) { console.warn('Migration error:', e); }
+
+  async _migrateFromLocal() {
+    // Migrate from IndexedDB
+    await this._loadFromIndexedDB();
+    // Push all cached data to Supabase
+    const sharedKeys = Object.keys(this._cache).filter(k => !LOCAL_KEYS.includes(k));
+    for (const key of sharedKeys) {
+      await this._supabaseUpsert(key, this._cache[key]);
+    }
+    console.log('Migration to Supabase complete: ' + sharedKeys.length + ' keys');
   },
+
+  async _supabaseUpsert(key, value) {
+    if (!SUPABASE_READY) return;
+    const { error } = await _supabase
+      .from('catalog_data')
+      .upsert({ key, value }, { onConflict: 'key' });
+    if (error) console.error('Supabase save error [' + key + ']:', error);
+  },
+
+  async _supabaseDelete(key) {
+    if (!SUPABASE_READY) return;
+    const { error } = await _supabase
+      .from('catalog_data')
+      .delete()
+      .eq('key', key);
+    if (error) console.error('Supabase delete error [' + key + ']:', error);
+  },
+
   get(key, def) {
     return this._cache[key] !== undefined ? this._cache[key] : def;
   },
+
   set(key, val) {
     this._cache[key] = val;
-    if (this._db) {
-      try {
-        const tx = this._db.transaction('kv', 'readwrite');
-        tx.objectStore('kv').put({key, value: val});
-      } catch(e) { console.error('DB set error:', e); }
+
+    if (LOCAL_KEYS.includes(key)) {
+      // Local-only keys: save to localStorage
+      try { localStorage.setItem('cat_' + key, JSON.stringify(val)); } catch(e) {}
+    } else {
+      // Shared keys: save to Supabase (async fire-and-forget)
+      if (SUPABASE_READY) {
+        showSyncBadge('saving');
+        this._supabaseUpsert(key, val).then(() => {
+          showSyncBadge('saved');
+        }).catch(() => {
+          showSyncBadge('error');
+        });
+      } else {
+        // Fallback: save to IndexedDB
+        this._idbSet(key, val);
+      }
     }
   },
+
   remove(key) {
     delete this._cache[key];
-    if (this._db) {
-      try {
-        const tx = this._db.transaction('kv', 'readwrite');
+
+    if (LOCAL_KEYS.includes(key)) {
+      try { localStorage.removeItem('cat_' + key); } catch(e) {}
+    } else {
+      if (SUPABASE_READY) {
+        this._supabaseDelete(key);
+      } else {
+        this._idbRemove(key);
+      }
+    }
+  },
+
+  _idbSet(key, val) {
+    if (!window.indexedDB) return;
+    try {
+      const req = indexedDB.open('catalogoDB_v2', 1);
+      req.onsuccess = (e) => {
+        const db = e.target.result;
+        const tx = db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put({key, value: val});
+      };
+    } catch(e) {}
+  },
+
+  _idbRemove(key) {
+    if (!window.indexedDB) return;
+    try {
+      const req = indexedDB.open('catalogoDB_v2', 1);
+      req.onsuccess = (e) => {
+        const db = e.target.result;
+        const tx = db.transaction('kv', 'readwrite');
         tx.objectStore('kv').delete(key);
-      } catch(e) {}
+      };
+    } catch(e) {}
+  },
+
+  // Reload all shared data from Supabase (used to refresh after admin changes on another device)
+  async reload() {
+    if (!SUPABASE_READY) return;
+    try {
+      const { data, error } = await _supabase
+        .from('catalog_data')
+        .select('key, value');
+      if (error) throw error;
+      if (data) {
+        data.forEach(row => { this._cache[row.key] = row.value; });
+      }
+    } catch(err) {
+      console.error('Supabase reload error:', err);
     }
   }
 };
+
+// ============ SYNC BADGE ============
+function showSyncBadge(status) {
+  let badge = document.getElementById('syncBadge');
+  if (!badge) {
+    badge = document.createElement('div');
+    badge.id = 'syncBadge';
+    badge.style.cssText = 'position:fixed;bottom:8px;right:8px;z-index:5000;font-size:11px;font-weight:600;padding:5px 10px;border-radius:20px;display:flex;align-items:center;gap:5px;transition:opacity .3s;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.15)';
+    document.body.appendChild(badge);
+  }
+
+  const styles = {
+    connecting: { bg: '#feca57', color: '#333', text: '🔄 Conectando...' },
+    connected:   { bg: '#2ed573', color: '#fff', text: '✓ Online' },
+    saving:      { bg: '#54a0ff', color: '#fff', text: '💾 Salvando...' },
+    saved:       { bg: '#2ed573', color: '#fff', text: '✓ Salvo' },
+    error:       { bg: '#ee5253', color: '#fff', text: '⚠ Erro de conexão' },
+  };
+  const s = styles[status] || styles.connected;
+  badge.style.background = s.bg;
+  badge.style.color = s.color;
+  badge.textContent = s.text;
+  badge.style.opacity = '1';
+
+  if (status === 'saved' || status === 'connected') {
+    clearTimeout(showSyncBadge._timer);
+    showSyncBadge._timer = setTimeout(() => { badge.style.opacity = '0'; }, 2000);
+  }
+}
 
 // Default settings
 const defaultSettings = {
@@ -709,13 +871,9 @@ let orderCounter = DB.get('orderCounter', 0);
 
 // ============ INIT ============
 async function init() {
-  // Show loading
-  document.body.style.opacity = '0';
-  document.body.style.transition = 'opacity .3s ease';
-  
   await DB.init();
   
-  // Reload data from DB cache after init
+  // Load all data from DB cache (now populated from Supabase)
   settings = DB.get('settings', defaultSettings);
   credentials = DB.get('credentials', defaultCredentials);
   messageTemplate = DB.get('messageTemplate', defaultMessageTemplate);
@@ -1633,6 +1791,57 @@ function deleteClient(id) {
   toast('Cliente excluído!', 'info');
 }
 
+async function reloadFromSupabase() {
+  if (!SUPABASE_READY) { toast('Supabase não configurado', 'error'); return; }
+  toast('Sincronizando...', 'info');
+  await DB.reload();
+  // Reload all variables from cache
+  settings = DB.get('settings', defaultSettings);
+  credentials = DB.get('credentials', defaultCredentials);
+  messageTemplate = DB.get('messageTemplate', defaultMessageTemplate);
+  products = DB.get('products', []);
+  categories = DB.get('categories', ['Geral']);
+  orders = DB.get('orders', []);
+  banners = DB.get('banners', []);
+  clients = DB.get('clients', []);
+  orderCounter = DB.get('orderCounter', 0);
+  // Re-render everything
+  applySettings();
+  applyTheme();
+  renderBanners();
+  renderCategories();
+  renderProducts();
+  renderCart();
+  renderFooter();
+  toast('Dados sincronizados! ✓', 'success');
+}
+
+// Auto-reload from Supabase when page regains focus (after admin changes on another device)
+let _lastFocus = Date.now();
+document.addEventListener('visibilitychange', async () => {
+  if (!document.hidden && SUPABASE_READY && Date.now() - _lastFocus > 30000) {
+    _lastFocus = Date.now();
+    await DB.reload();
+    settings = DB.get('settings', defaultSettings);
+    credentials = DB.get('credentials', defaultCredentials);
+    messageTemplate = DB.get('messageTemplate', defaultMessageTemplate);
+    products = DB.get('products', []);
+    categories = DB.get('categories', ['Geral']);
+    orders = DB.get('orders', []);
+    banners = DB.get('banners', []);
+    clients = DB.get('clients', []);
+    orderCounter = DB.get('orderCounter', 0);
+    applySettings();
+    applyTheme();
+    renderBanners();
+    renderCategories();
+    renderProducts();
+    renderCart();
+    renderFooter();
+  }
+  if (!document.hidden) _lastFocus = Date.now();
+});
+
 // ============ TOAST ============
 function toast(msg, type = 'info') {
   const container = document.getElementById('toastContainer');
@@ -2376,7 +2585,21 @@ function renderAdminMessage() {
 
 // ---- BACKUP JSON ----
 function renderAdminBackup() {
-  return ` 
+  let html = '<div style="margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap">';
+  html += '<button class="btn btn-primary" onclick="reloadFromSupabase()">🔄 Sincronizar com Supabase</button>';
+  html += '</div>';
+  // (backup content continues below)
+  return html + ` 
+    <div class="settings-group"> 
+      <h4>🔌 Status do Supabase</h4>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:10px">
+        ${SUPABASE_READY 
+          ? '<span style="color:#2ed573;font-weight:600">✅ Conectado ao Supabase</span> — Os dados estão sincronizados em tempo real.' 
+          : '<span style="color:#ee5253;font-weight:600">⚠️ Supabase não configurado</span> — Os dados estão sendo salvos apenas neste navegador.'}
+      </p>
+      ${!SUPABASE_READY ? '<p style="font-size:12px;color:var(--text-muted);line-height:1.6">Para configurar o Supabase:<br>1. Crie um projeto em <a href="https://supabase.com" target="_blank">supabase.com</a><br>2. No SQL Editor, execute o script de criação da tabela<br>3. Edite o arquivo HTML e preencha <code>SUPABASE_CONFIG</code> com sua URL e anon key</p>' : ''}
+      <button class="btn btn-secondary" onclick="reloadFromSupabase()">🔄 Sincronizar agora</button>
+    </div>
     <div class="settings-group"> 
       <h4>💾 Backup / Exportar Tudo (JSON)</h4> 
       <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Exporta TODOS os dados do catálogo: produtos, pedidos, banners, categorias, configurações, credenciais, modelo de mensagem e favoritos.</p> 
