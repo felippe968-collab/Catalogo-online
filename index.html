@@ -416,7 +416,7 @@ const SUPABASE_CONFIG = {
 };
 
 // Keys that stay in localStorage (per-browser, not shared)
-const LOCAL_KEYS = ['cart', 'favorites', 'currentClient'];
+const LOCAL_KEYS = ['cart', 'favorites', 'currentClient', 'theme'];
 
 const _supabase = (SUPABASE_CONFIG.url && SUPABASE_CONFIG.url !== 'COLE_AQUI_SUA_URL_DO_SUPABASE')
   ? window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey)
@@ -953,13 +953,14 @@ function applySettings() {
 }
 
 function applyTheme() {
-  document.documentElement.setAttribute('data-theme', settings.darkMode ? 'dark' : 'light');
-  document.getElementById('themeBtn').textContent = settings.darkMode ? '☀️' : '🌙';
-  DB.set('settings', settings);
+  const dark = localStorage.getItem('theme') === 'dark' || (!localStorage.getItem('theme') && settings.darkMode);
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  document.getElementById('themeBtn').textContent = dark ? '☀️' : '🌙';
 }
 
 function toggleTheme() {
-  settings.darkMode = !settings.darkMode;
+  const currentDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  localStorage.setItem('theme', currentDark ? 'light' : 'dark');
   applyTheme();
 }
 
