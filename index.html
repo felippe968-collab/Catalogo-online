@@ -892,6 +892,7 @@ let banners = DB.get('banners', []);
 let cart = DB.get('cart', []);
 let favorites = DB.get('favorites', []);
 let orderCounter = DB.get('orderCounter', 0);
+let _pendingCheckout = false;
 
 // ============ INIT ============
 async function init() {
@@ -1238,6 +1239,21 @@ function closeCart() { document.getElementById('cartDrawer').classList.remove('o
 // ============ CHECKOUT ============
 function openCheckout() {
   if (cart.length === 0) { toast('Carrinho vazio!', 'error'); return; }
+  
+  // If not logged in, force login/register first
+  if (!currentClient) {
+    closeCart();
+    openClientLogin();
+    // Override the login modal title/message to explain why
+    const loginError = document.getElementById('clientLoginError');
+    loginError.style.display = 'block';
+    loginError.style.background = 'rgba(9,132,227,.1)';
+    loginError.style.color = 'var(--info)';
+    loginError.textContent = '🔒 Para finalizar seu pedido, você precisa criar uma conta ou entrar. Assim você acompanha seus pedidos!';
+    _pendingCheckout = true;
+    return;
+  }
+  
   const summary = document.getElementById('orderSummary');
   let total = 0;
   summary.innerHTML = '<h4>Resumo do Pedido</h4>' + cart.map(item => {
@@ -1246,30 +1262,20 @@ function openCheckout() {
     return `<div class="order-summary-item"><span>${item.name} (${item.qty}x)</span><span>R$ ${t.toFixed(2).replace('.',',')}</span></div>`;
   }).join('') + `<div class="order-summary-item" style="font-weight:800;margin-top:8px;border-top:1px solid var(--border);padding-top:8px"><span>Total</span><span>R$ ${total.toFixed(2).replace('.',',')}</span></div>`;
   
-  // Pre-fill form if client is logged in
-  if (currentClient) {
-    document.getElementById('custName').value = currentClient.name || '';
-    document.getElementById('custSurname').value = currentClient.surname || '';
-    document.getElementById('custWhatsapp').value = currentClient.whatsapp || '';
-    document.getElementById('custEmail').value = currentClient.email || '';
-    // Show a note that data is from their account
-    const note = document.getElementById('checkoutClientNote');
-    if (note) note.remove();
-    const checkoutBody = document.getElementById('checkoutBody');
-    const noteEl = document.createElement('div');
-    noteEl.id = 'checkoutClientNote';
-    noteEl.style.cssText = 'padding:12px;background:rgba(0,184,148,.1);border-radius:8px;font-size:13px;color:var(--success);margin-bottom:12px;display:flex;align-items:center;gap:8px';
-    noteEl.innerHTML = '✅ Dados preenchidos automaticamente da sua conta. <span style="text-decoration:underline;cursor:pointer;color:var(--primary)" onclick="closeCheckout();openClientAccount()">Editar</span>';
-    checkoutBody.insertBefore(noteEl, checkoutBody.firstChild);
-  } else {
-    // Not logged in - clear fields and remove note
-    document.getElementById('custName').value = '';
-    document.getElementById('custSurname').value = '';
-    document.getElementById('custWhatsapp').value = '';
-    document.getElementById('custEmail').value = '';
-    const note = document.getElementById('checkoutClientNote');
-    if (note) note.remove();
-  }
+  // Pre-fill form from logged-in client
+  document.getElementById('custName').value = currentClient.name || '';
+  document.getElementById('custSurname').value = currentClient.surname || '';
+  document.getElementById('custWhatsapp').value = currentClient.whatsapp || '';
+  document.getElementById('custEmail').value = currentClient.email || '';
+  // Show a note that data is from their account
+  const note = document.getElementById('checkoutClientNote');
+  if (note) note.remove();
+  const checkoutBody = document.getElementById('checkoutBody');
+  const noteEl = document.createElement('div');
+  noteEl.id = 'checkoutClientNote';
+  noteEl.style.cssText = 'padding:12px;background:rgba(0,184,148,.1);border-radius:8px;font-size:13px;color:var(--success);margin-bottom:12px;display:flex;align-items:center;gap:8px';
+  noteEl.innerHTML = '✅ Dados da sua conta. <span style="text-decoration:underline;cursor:pointer;color:var(--primary)" onclick="closeCheckout();openClientAccount()">Editar perfil</span>';
+  checkoutBody.insertBefore(noteEl, checkoutBody.firstChild);
   
   // Reset checkout body and footer visibility
   document.getElementById('checkoutBody').style.display = 'block';
@@ -1371,23 +1377,13 @@ function submitOrder(method) {
     </div>`;
   document.getElementById('checkoutFooter').style.display = 'none';
   
-  // Offer to create account (only if not logged in)
-  if (!currentClient) {
-    document.getElementById('checkoutBody').innerHTML += `
-      <div style="margin-top:20px;padding:16px;background:var(--bg-muted);border-radius:var(--radius-sm);text-align:center">
-        <p style="font-size:14px;margin-bottom:10px">💡 Crie uma conta para <strong>acompanhar seus pedidos</strong>!</p>
-        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Cadastre-se com o mesmo e-mail ou WhatsApp usado no pedido para ver tudo aqui.</p>
-        <button class="btn btn-primary" style="width:100%" onclick="closeCheckout();openClientLogin()">👤 Criar Conta / Acessar</button>
-      </div>
-    `;
-  } else {
-    document.getElementById('checkoutBody').innerHTML += `
-      <div style="margin-top:20px;padding:16px;background:rgba(0,184,148,.08);border-radius:var(--radius-sm);text-align:center">
-        <p style="font-size:14px;margin-bottom:10px">✅ Pedido vinculado à sua conta! Acompanhe em <strong>Minha Conta</strong>.</p>
-        <button class="btn btn-primary" style="width:100%" onclick="closeCheckout();openClientAccount()">👤 Ver Meus Pedidos</button>
-      </div>
-    `;
-  }
+  // Show link to account since client is always logged in now
+  document.getElementById('checkoutBody').innerHTML += `
+    <div style="margin-top:20px;padding:16px;background:rgba(0,184,148,.08);border-radius:var(--radius-sm);text-align:center">
+      <p style="font-size:14px;margin-bottom:10px">✅ Pedido vinculado à sua conta! Acompanhe em <strong>Minha Conta</strong>.</p>
+      <button class="btn btn-primary" style="width:100%" onclick="closeCheckout();openClientAccount()">👤 Ver Meus Pedidos</button>
+    </div>
+  `;
   toast(`Pedido #${String(orderNum).padStart(3, '0')} criado!`, 'success');
 }
 
@@ -1580,8 +1576,14 @@ function doClientLogin() {
   DB.set('currentClient', { id: client.id });
   closeClientLogin();
   updateClientMenuBtn();
-  openClientAccount();
-  toast('Bem-vindo, ' + client.name + '! 👋', 'success');
+  if (_pendingCheckout) {
+    _pendingCheckout = false;
+    openCheckout();
+    toast('Login realizado! Finalize seu pedido. 🛒', 'success');
+  } else {
+    openClientAccount();
+    toast('Bem-vindo, ' + client.name + '! 👋', 'success');
+  }
 }
 
 function doClientRegister() {
@@ -1625,8 +1627,14 @@ function doClientRegister() {
   // Clear form
   ['regName','regSurname','regWhatsapp','regEmail','regPass','regPass2'].forEach(id => document.getElementById(id).value = '');
   
-  openClientAccount();
-  toast('Conta criada com sucesso! 🎉', 'success');
+  if (_pendingCheckout) {
+    _pendingCheckout = false;
+    openCheckout();
+    toast('Conta criada! Finalize seu pedido. 🛒', 'success');
+  } else {
+    openClientAccount();
+    toast('Conta criada com sucesso! 🎉', 'success');
+  }
 }
 
 function showClientLoginError(msg) {
