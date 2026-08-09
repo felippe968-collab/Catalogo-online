@@ -218,6 +218,7 @@ a{color:inherit;text-decoration:none;}
 .status-pending{background:var(--warning);color:#333;}
 .status-finished{background:var(--success);color:#fff;}
 .status-cancelled{background:var(--danger);color:#fff;}
+.status-transit{background:var(--info);color:#fff;}
 .admin-toolbar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center;}
 .admin-toolbar input,.admin-toolbar select{padding:8px 12px;border:2px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:13px;}
 .settings-group{background:var(--bg);border-radius:var(--radius);padding:20px;margin-bottom:16px;border:1px solid var(--border);}
@@ -344,6 +345,7 @@ a{color:inherit;text-decoration:none;}
 .client-order-card.status-finished{border-left-color:var(--success);}
 .client-order-card.status-cancelled{border-left-color:var(--danger);}
 .client-order-card.status-cancelled-by-client{border-left-color:var(--danger);}
+.client-order-card.status-transit{border-left-color:var(--info);}
 .client-order-top{display:flex;justify-content:space-between;align-items:start;margin-bottom:10px;flex-wrap:wrap;gap:8px;}
 .client-order-num{font-size:18px;font-weight:800;color:var(--primary);}
 .client-order-date{font-size:13px;color:var(--text-muted);}
@@ -352,6 +354,7 @@ a{color:inherit;text-decoration:none;}
 .status-badge-finished{background:rgba(0,184,148,.15);color:var(--success);}
 .status-badge-cancelled{background:rgba(231,76,60,.15);color:var(--danger);}
 .status-badge-cancelled-by-client{background:rgba(231,76,60,.15);color:var(--danger);}
+.status-badge-transit{background:rgba(9,132,227,.15);color:var(--info);}
 .client-order-items{font-size:14px;color:var(--text-muted);margin-bottom:10px;line-height:1.6;}
 .client-order-total{font-size:18px;font-weight:800;color:var(--primary);margin-bottom:10px;}
 .client-order-actions{display:flex;gap:8px;flex-wrap:wrap;}
@@ -1689,7 +1692,8 @@ function renderClientOrders() {
       'pending': 'Pendente',
       'finished': 'Concluído',
       'cancelled': 'Cancelado',
-      'cancelled-by-client': 'Cancelado por Você'
+      'cancelled-by-client': 'Cancelado por Você',
+      'transit': 'Em Trânsito'
     };
     const statusClass = o.status || 'pending';
     const badgeClass = 'status-badge-' + statusClass;
@@ -1705,6 +1709,11 @@ function renderClientOrders() {
       statusMsg = '<div style="font-size:13px;color:var(--warning);margin-top:8px;font-weight:600">⏳ Pedido pendente — a loja entrará em contato!</div>';
     } else if (o.status === 'finished') {
       statusMsg = '<div style="font-size:13px;color:var(--success);margin-top:8px;font-weight:600">✅ Pedido concluído!</div>';
+    } else if (o.status === 'transit') {
+      statusMsg = '<div style="font-size:13px;color:var(--info);margin-top:8px;font-weight:600">🚚 Pedido em trânsito!</div>';
+      if (o.tracking) {
+        statusMsg += '<a href="' + o.tracking + '" target="_blank" style="display:inline-block;margin-top:6px;padding:8px 16px;background:var(--info);color:#fff;border-radius:var(--radius-sm);font-size:13px;font-weight:600;text-decoration:none">📦 Rastrear pedido</a>';
+      }
     } else if (o.status === 'cancelled' || o.status === 'cancelled-by-client') {
       statusMsg = '<div style="font-size:13px;color:var(--danger);margin-top:8px;font-weight:600">❌ Pedido cancelado</div>';
     }
@@ -1980,6 +1989,7 @@ function renderAdminDashboard() {
       <div class="stat-card"><div class="stat-value">${products.length}</div><div class="stat-label">Produtos</div></div>
       <div class="stat-card"><div class="stat-value">${orders.length}</div><div class="stat-label">Total Pedidos</div></div>
       <div class="stat-card"><div class="stat-value">${pending.length}</div><div class="stat-label">Pendentes</div></div>
+      <div class="stat-card"><div class="stat-value">${orders.filter(o => o.status === 'transit').length}</div><div class="stat-label">Em Trânsito</div></div>
       <div class="stat-card"><div class="stat-value">${finished.length}</div><div class="stat-label">Finalizados</div></div>
       <div class="stat-card"><div class="stat-value">R$ ${totalRevenue.toFixed(2).replace('.',',')}</div><div class="stat-label">Receita</div></div>
     </div>
@@ -2000,7 +2010,7 @@ function renderAdminDashboard() {
       ${orders.length > 0 ? orders.slice(-5).reverse().map(o => `
         <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
           <span><strong>#${String(o.number).padStart(3,'0')}</strong> ${o.customerName}</span>
-          <span>R$ ${o.total.toFixed(2).replace('.',',')} <span class="order-status status-${o.status}">${o.status === 'pending' ? 'Pendente' : o.status === 'finished' ? 'Finalizado' : 'Cancelado'}</span></span>
+          <span>R$ ${o.total.toFixed(2).replace('.',',')} <span class="order-status status-${o.status}">${o.status === 'pending' ? 'Pendente' : o.status === 'finished' ? 'Finalizado' : o.status === 'transit' ? 'Em Trânsito' : 'Cancelado'}</span></span>
         </div>
       `).join('') : '<p style="color:var(--text-muted)">Nenhum pedido ainda.</p>'}
     </div>
@@ -2207,6 +2217,7 @@ function renderAdminOrders() {
         <option value="">Todos os status</option>
         <option value="pending">Pendentes</option>
         <option value="finished">Finalizados</option>
+        <option value="transit">Em Trânsito</option>
         <option value="cancelled">Cancelados</option>
       </select>
       <input type="date" id="orderDateFilter" onchange="filterOrders()">
@@ -2234,13 +2245,49 @@ function renderOrdersRows(orderList) {
       <td>${o.time}</td>
       <td>${o.items.map(i => `${i.name} (${i.qty}x)`).join(', ')}</td>
       <td><strong>R$ ${o.total.toFixed(2).replace('.',',')}</strong></td>
-      <td><span class="order-status status-${o.status}">${o.status === 'pending' ? 'Pendente' : o.status === 'finished' ? 'Finalizado' : 'Cancelado'}</span></td>
+      <td><span class="order-status status-${o.status}">${o.status === 'pending' ? 'Pendente' : o.status === 'finished' ? 'Finalizado' : o.status === 'transit' ? 'Em Trânsito' : 'Cancelado'}</span></td>
       <td>
+        <button class="btn btn-sm" style="background:var(--info);color:#fff" onclick="openTransitDialog(${o.id})" title="Marcar em trânsito">🚚</button>
         <button class="btn btn-success btn-sm" onclick="setOrderStatus(${o.id},'finished')" title="Finalizar">✓</button>
         <button class="btn btn-secondary btn-sm" onclick="setOrderStatus(${o.id},'cancelled')" title="Cancelar">✕</button>
         <button class="btn btn-danger btn-sm" onclick="deleteOrder(${o.id})" title="Excluir">🗑️</button>
       </td>
     </tr>`).join('');
+}
+
+function openTransitDialog(id) {
+  const order = orders.find(o => o.id === id);
+  if (!order) return;
+  const currentTracking = order.tracking || '';
+  const html = `
+    <div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:5000;display:flex;align-items:center;justify-content:center" id="transitOverlay" onclick="if(event.target===this)this.remove()">
+      <div style="background:var(--bg-card);border-radius:var(--radius);padding:24px;max-width:400px;width:90%;box-shadow:var(--shadow-lg)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h3 style="font-size:18px;font-weight:700">🚚 Marcar em Trânsito</h3>
+          <button class="cart-close" onclick="document.getElementById('transitOverlay').remove()">✕</button>
+        </div>
+        <p style="font-size:14px;color:var(--text-muted);margin-bottom:14px">Pedido #${String(order.number).padStart(3,'0')} — ${order.customerName}</p>
+        <div class="form-group">
+          <label>Link de Rastreio (opcional)</label>
+          <input type="text" id="transitTrackingInput" placeholder="https://link.correios.com.br/..." value="${currentTracking}" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:14px">
+        </div>
+        <button class="btn btn-block" style="background:var(--info);color:#fff;margin-top:10px;padding:12px;border-radius:var(--radius-sm);font-weight:600" onclick="setTransitStatus(${id})">Confirmar</button>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function setTransitStatus(id) {
+  const tracking = document.getElementById('transitTrackingInput') ? document.getElementById('transitTrackingInput').value.trim() : '';
+  const order = orders.find(o => o.id === id);
+  if (order) {
+    order.status = 'transit';
+    order.tracking = tracking || undefined;
+    DB.set('orders', orders);
+    document.getElementById('transitOverlay').remove();
+    filterOrders();
+    toast('Pedido marcado como Em Trânsito!', 'success');
+  }
 }
 
 function filterOrders() {
