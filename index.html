@@ -248,6 +248,18 @@ a{color:inherit;text-decoration:none;}
 
 @media(max-width:768px){.admin-link{opacity:0.5;font-size:16px;padding:10px 16px;}}
 
+
+/* ============ COUPONS ============ */
+.coupon-input-wrap{display:flex;gap:8px;margin-top:8px;}
+.coupon-input-wrap input{flex:1;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:14px;}
+.coupon-input-wrap button{padding:10px 16px;background:var(--primary);color:#fff;border-radius:var(--radius-sm);font-weight:600;font-size:14px;white-space:nowrap;}
+.coupon-applied{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(0,184,148,.1);border-radius:var(--radius-sm);margin-top:8px;}
+.coupon-applied-text{font-size:14px;color:var(--success);font-weight:600;}
+.coupon-remove-btn{background:none;border:none;color:var(--danger);font-size:18px;cursor:pointer;}
+.coupon-admin-table{width:100%;border-collapse:collapse;margin-top:12px;}
+.coupon-admin-table th,.coupon-admin-table td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);font-size:14px;}
+.coupon-admin-table th{color:var(--text-muted);font-weight:600;font-size:12px;text-transform:uppercase;}
+
 /* ============ MOBILE FOOTER ACTIONS ============ */
 .footer-actions{display:none;}
 @media(max-width:768px){
@@ -563,6 +575,14 @@ const SUPABASE_READY = !!_supabase;
         <label>E-mail *</label>
         <input type="email" id="custEmail" placeholder="seu@email.com">
       </div>
+      <div class="form-group" id="couponField" style="display:none">
+        <label>🎫 Cupom de Desconto</label>
+        <div class="coupon-input-wrap">
+          <input type="text" id="couponInput" placeholder="Digite o cupom">
+          <button onclick="applyCoupon()">Aplicar</button>
+        </div>
+        <div id="couponAppliedBox" style="display:none"></div>
+      </div>
     </div>
     <div class="modal-footer" id="checkoutFooter">
       <button class="btn btn-whatsapp btn-block" onclick="submitOrder('whatsapp')">📱 Enviar pelo WhatsApp</button>
@@ -590,6 +610,7 @@ const SUPABASE_READY = !!_supabase;
       <div class="admin-tab" onclick="switchAdminTab('settings',this)">⚙️ Configurações</div>
       <div class="admin-tab" onclick="switchAdminTab('security',this)">🔐 Segurança</div>
       <div class="admin-tab" onclick="switchAdminTab('message',this)">💬 Mensagem Pedido</div>
+      <div class="admin-tab" onclick="switchAdminTab('coupons',this)">🎫 Cupons</div>
       <div class="admin-tab" onclick="switchAdminTab('clients',this)">👥 Clientes</div>
       <div class="admin-tab" onclick="switchAdminTab('backup',this)">💾 Backup JSON</div>
     </div>
@@ -889,6 +910,8 @@ let products = DB.get('products', []);
 let categories = DB.get('categories', ['Geral']);
 let orders = DB.get('orders', []);
 let banners = DB.get('banners', []);
+let coupons = DB.get('coupons', []);
+let appliedCoupon = null;
 let cart = DB.get('cart', []);
 let favorites = DB.get('favorites', []);
 let orderCounter = DB.get('orderCounter', 0);
@@ -1254,14 +1277,6 @@ function openCheckout() {
     return;
   }
   
-  const summary = document.getElementById('orderSummary');
-  let total = 0;
-  summary.innerHTML = '<h4>Resumo do Pedido</h4>' + cart.map(item => {
-    const t = item.price * item.qty;
-    total += t;
-    return `<div class="order-summary-item"><span>${item.name} (${item.qty}x)</span><span>R$ ${t.toFixed(2).replace('.',',')}</span></div>`;
-  }).join('') + `<div class="order-summary-item" style="font-weight:800;margin-top:8px;border-top:1px solid var(--border);padding-top:8px"><span>Total</span><span>R$ ${total.toFixed(2).replace('.',',')}</span></div>`;
-  
   // Pre-fill form from logged-in client
   document.getElementById('custName').value = currentClient.name || '';
   document.getElementById('custSurname').value = currentClient.surname || '';
@@ -1281,11 +1296,14 @@ function openCheckout() {
   document.getElementById('checkoutBody').style.display = 'block';
   document.getElementById('checkoutFooter').style.display = 'flex';
   
+  refreshCouponField();
+  updateCheckoutTotal();
   document.getElementById('checkoutModal').classList.add('open');
 }
 
 function closeCheckout() {
   document.getElementById('checkoutModal').classList.remove('open');
+  appliedCoupon = null;
   document.getElementById('checkoutBody').style.display = 'block';
   document.getElementById('checkoutFooter').style.display = 'flex';
   const note = document.getElementById('checkoutClientNote');
@@ -1331,6 +1349,8 @@ function submitOrder(method) {
   DB.set('orderCounter', orderCounter);
   
   let total = cart.reduce((s, c) => s + (c.price * c.qty), 0);
+  const discount = calculateDiscount();
+  if (discount > 0) total -= discount;
   const orderNum = orderCounter;
   const now = new Date();
   
@@ -1345,7 +1365,8 @@ function submitOrder(method) {
     time: now.toTimeString().split(' ')[0],
     datetime: now.toISOString(),
     status: 'pending',
-    clientId: clientId
+    clientId: clientId,
+    coupon: appliedCoupon ? { code: appliedCoupon.code, percentage: appliedCoupon.percentage, discount: discount } : undefined
   };
   
   orders.push(order);
@@ -1386,6 +1407,192 @@ function submitOrder(method) {
   `;
   toast(`Pedido #${String(orderNum).padStart(3, '0')} criado!`, 'success');
 }
+
+
+// ============ COUPONS ============
+function renderAdminCoupons() {
+  return `
+    <div class="admin-toolbar">
+      <h3 style="font-size:18px;font-weight:700">🎫 Gerenciar Cupons</h3>
+      <button class="btn btn-primary btn-sm" onclick="openCouponForm()">➕ Novo Cupom</button>
+    </div>
+    <div id="couponFormContainer"></div>
+    <table class="coupon-admin-table">
+      <thead>
+        <tr><th>Código</th><th>Desconto</th><th>Ativo</th><th>Criado em</th><th>Ações</th></tr>
+      </thead>
+      <tbody>
+        ${coupons.length === 0 ? '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px">Nenhum cupom criado.</td></tr>' : coupons.map(c => `
+          <tr>
+            <td><strong>${c.code}</strong></td>
+            <td>${c.percentage}%</td>
+            <td>${c.active ? '<span style="color:var(--success)">✅ Sim</span>' : '<span style="color:var(--danger)">❌ Não</span>'}</td>
+            <td>${c.createdAt || '-'}</td>
+            <td>
+              <button class="btn btn-sm" style="background:var(--success);color:#fff" onclick="toggleCoupon(${c.id})" title="${c.active ? 'Desativar' : 'Ativar'}">${c.active ? '⏸️' : '▶️'}</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteCoupon(${c.id})" title="Excluir">🗑️</button>
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`;
+}
+
+function openCouponForm(coupon) {
+  const container = document.getElementById('couponFormContainer');
+  container.innerHTML = `
+    <div class="modal-overlay open" style="z-index:5000">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>${coupon ? 'Editar Cupom' : 'Novo Cupom'}</h3>
+          <button class="cart-close" onclick="closeCouponForm()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>Código do Cupom *</label>
+            <input type="text" id="couponCode" placeholder="EX: PROMO10" value="${coupon ? coupon.code : ''}" style="text-transform:uppercase">
+          </div>
+          <div class="form-group">
+            <label>Desconto (%) *</label>
+            <input type="number" id="couponPercentage" min="1" max="100" step="1" placeholder="Ex: 10" value="${coupon ? coupon.percentage : ''}">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary btn-block" onclick="closeCouponForm()">Cancelar</button>
+          <button class="btn btn-primary btn-block" onclick="saveCoupon(${coupon ? coupon.id : 'null'})">${coupon ? 'Salvar' : 'Criar Cupom'}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function closeCouponForm() {
+  document.getElementById('couponFormContainer').innerHTML = '';
+}
+
+function saveCoupon(id) {
+  const code = document.getElementById('couponCode').value.trim().toUpperCase();
+  const percentage = parseInt(document.getElementById('couponPercentage').value);
+  if (!code || isNaN(percentage) || percentage < 1 || percentage > 100) {
+    toast('Preencha código e desconto (1-100%)!', 'error');
+    return;
+  }
+  if (!id && coupons.find(c => c.code === code)) {
+    toast('Já existe um cupom com este código!', 'error');
+    return;
+  }
+  if (id) {
+    const c = coupons.find(c => c.id === id);
+    if (c) { c.code = code; c.percentage = percentage; }
+    toast('Cupom atualizado!', 'success');
+  } else {
+    coupons.push({ id: Date.now(), code, percentage, active: true, createdAt: new Date().toISOString().split('T')[0] });
+    toast('Cupom criado!', 'success');
+  }
+  DB.set('coupons', coupons);
+  closeCouponForm();
+  switchAdminTab('coupons', document.querySelectorAll('.admin-tab')[document.querySelectorAll('.admin-tab').length - 3]);
+}
+
+function toggleCoupon(id) {
+  const c = coupons.find(c => c.id === id);
+  if (c) { c.active = !c.active; DB.set('coupons', coupons); switchAdminTab('coupons', document.querySelectorAll('.admin-tab')[document.querySelectorAll('.admin-tab').length - 3]); toast(c.active ? 'Cupom ativado!' : 'Cupom desativado!', 'info'); }
+}
+
+function deleteCoupon(id) {
+  if (!confirm('Excluir este cupom?')) return;
+  coupons = coupons.filter(c => c.id !== id);
+  DB.set('coupons', coupons);
+  switchAdminTab('coupons', document.querySelectorAll('.admin-tab')[document.querySelectorAll('.admin-tab').length - 3]);
+  toast('Cupom excluído!', 'info');
+}
+
+function checkCouponEligibility() {
+  // Verifica se há pelo menos um produto no carrinho que aceita cupom
+  return cart.some(item => {
+    const p = products.find(prod => prod.id === item.id);
+    return p && p.couponEnabled;
+  });
+}
+
+function refreshCouponField() {
+  const field = document.getElementById('couponField');
+  if (!field) return;
+  const eligible = checkCouponEligibility();
+  field.style.display = eligible ? 'block' : 'none';
+  if (!eligible) {
+    appliedCoupon = null;
+    updateCheckoutTotal();
+    const appliedBox = document.getElementById('couponAppliedBox');
+    if (appliedBox) appliedBox.style.display = 'none';
+  }
+}
+
+function applyCoupon() {
+  const code = document.getElementById('couponInput').value.trim().toUpperCase();
+  if (!code) { toast('Digite um cupom!', 'error'); return; }
+  const coupon = coupons.find(c => c.code === code && c.active);
+  if (!coupon) { toast('Cupom inválido ou inativo!', 'error'); return; }
+  if (!checkCouponEligibility()) { toast('Nenhum produto no carrinho aceita cupom!', 'error'); return; }
+  appliedCoupon = coupon;
+  toast(`Cupom ${coupon.code} aplicado! ${coupon.percentage}% de desconto 🎉`, 'success');
+  document.getElementById('couponInput').value = '';
+  updateCheckoutTotal();
+  renderCouponApplied();
+}
+
+function removeCoupon() {
+  appliedCoupon = null;
+  updateCheckoutTotal();
+  renderCouponApplied();
+  toast('Cupom removido', 'info');
+}
+
+function renderCouponApplied() {
+  const box = document.getElementById('couponAppliedBox');
+  if (!box) return;
+  if (appliedCoupon) {
+    box.style.display = 'block';
+    box.innerHTML = `<div class="coupon-applied"><span class="coupon-applied-text">✅ ${appliedCoupon.code} — ${appliedCoupon.percentage}% de desconto</span><button class="coupon-remove-btn" onclick="removeCoupon()">✕</button></div>`;
+  } else {
+    box.style.display = 'none';
+  }
+}
+
+function calculateDiscount() {
+  if (!appliedCoupon) return 0;
+  // Aplica desconto apenas nos produtos que aceitam cupom
+  let discountable = 0;
+  cart.forEach(item => {
+    const p = products.find(prod => prod.id === item.id);
+    if (p && p.couponEnabled) discountable += item.price * item.qty;
+  });
+  return discountable * (appliedCoupon.percentage / 100);
+}
+
+function updateCheckoutTotal() {
+  const summary = document.getElementById('orderSummary');
+  if (!summary) return;
+  let total = 0;
+  let discountable = 0;
+  cart.forEach(item => {
+    const t = item.price * item.qty;
+    total += t;
+    const p = products.find(prod => prod.id === item.id);
+    if (p && p.couponEnabled) discountable += t;
+  });
+  let html = '<h4>Resumo do Pedido</h4>' + cart.map(item => {
+    const t = item.price * item.qty;
+    return `<div class="order-summary-item"><span>${item.name} (${item.qty}x)</span><span>R$ ${t.toFixed(2).replace('.',',')}</span></div>`;
+  }).join('');
+  if (appliedCoupon && discountable > 0) {
+    const discount = discountable * (appliedCoupon.percentage / 100);
+    html += `<div class="order-summary-item" style="color:var(--success)"><span>Desconto (${appliedCoupon.code})</span><span>- R$ ${discount.toFixed(2).replace('.',',')}</span></div>`;
+    total -= discount;
+  }
+  html += `<div class="order-summary-item" style="font-weight:800;margin-top:8px;border-top:1px solid var(--border);padding-top:8px"><span>Total</span><span>R$ ${total.toFixed(2).replace('.',',')}</span></div>`;
+  summary.innerHTML = html;
+}
+
 
 // ============ FOOTER ============
 function renderFooter() {
@@ -1969,6 +2176,7 @@ function switchAdminTab(tab, el) {
   else if (tab === 'settings') content.innerHTML = renderAdminSettings();
   else if (tab === 'security') content.innerHTML = renderAdminSecurity();
   else if (tab === 'message') content.innerHTML = renderAdminMessage();
+  else if (tab === 'coupons') content.innerHTML = renderAdminCoupons();
   else if (tab === 'clients') content.innerHTML = renderAdminClients();
   else if (tab === 'backup') content.innerHTML = renderAdminBackup();
   
@@ -2131,6 +2339,9 @@ function openProductForm(product = null) {
           <div class="form-group">
             <div class="checkbox-row"><input type="checkbox" id="productPromo" ${product && product.badgePromo?'checked':''}><label>🏷️ Etiqueta "Promoção"</label></div>
           </div>
+          <div class="form-group">
+            <div class="checkbox-row"><input type="checkbox" id="productCouponEnabled" ${product && product.couponEnabled?'checked':''}><label>🎫 Aceita cupom de desconto</label></div>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary btn-block" onclick="closeProductForm()">Cancelar</button>
@@ -2172,7 +2383,8 @@ function saveProduct() {
     featured: document.getElementById('productFeatured').checked,
     hidden: document.getElementById('productHidden').checked,
     badgeNew: document.getElementById('productNew').checked,
-    badgePromo: document.getElementById('productPromo').checked
+    badgePromo: document.getElementById('productPromo').checked,
+    couponEnabled: document.getElementById('productCouponEnabled').checked
   };
   
   if (editingProductId) {
