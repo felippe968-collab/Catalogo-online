@@ -685,6 +685,7 @@ const DB = {
         } else {
           // Supabase is empty — migrate from IndexedDB/localStorage
           await this._migrateFromLocal();
+          // Se migração não encontrou nada, não limpa o cache
         }
 
         // Also load local keys that might exist in old IndexedDB
@@ -825,11 +826,12 @@ const DB = {
         .from('catalog_data')
         .select('key, value');
       if (error) throw error;
-      if (data) {
+      if (data && data.length > 0) {
         data.forEach(row => { this._cache[row.key] = row.value; });
       }
     } catch(err) {
       console.error('Supabase reload error:', err);
+      // Não limpa o cache em caso de erro — mantém os dados existentes
     }
   }
 };
@@ -929,6 +931,7 @@ async function init() {
   categories = DB.get('categories', ['Geral']);
   orders = DB.get('orders', []);
   banners = DB.get('banners', []);
+  coupons = DB.get('coupons', []);
   cart = DB.get('cart', []);
   favorites = DB.get('favorites', []);
   clients = DB.get('clients', []);
@@ -2054,6 +2057,7 @@ async function reloadFromSupabase() {
   categories = DB.get('categories', ['Geral']);
   orders = DB.get('orders', []);
   banners = DB.get('banners', []);
+  coupons = DB.get('coupons', []);
   clients = DB.get('clients', []);
   orderCounter = DB.get('orderCounter', 0);
   // Re-render everything
@@ -2080,6 +2084,7 @@ document.addEventListener('visibilitychange', async () => {
     categories = DB.get('categories', ['Geral']);
     orders = DB.get('orders', []);
     banners = DB.get('banners', []);
+    coupons = DB.get('coupons', []);
     clients = DB.get('clients', []);
     orderCounter = DB.get('orderCounter', 0);
     applySettings();
