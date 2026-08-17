@@ -927,7 +927,7 @@ function saveCart() {
   if (currentClient) {
     DB.set('cart_' + currentClient.id, cart);
   } else {
-    saveCart();
+    DB.set('cart', cart);
   }
 }
 
@@ -935,7 +935,7 @@ function saveFavorites() {
   if (currentClient) {
     DB.set('favorites_' + currentClient.id, favorites);
   } else {
-    saveFavorites();
+    DB.set('favorites', favorites);
   }
 }
 
