@@ -157,6 +157,8 @@ a{color:inherit;text-decoration:none;}
 .btn-checkout{width:100%;padding:14px;background:var(--success);color:#fff;border-radius:var(--radius-sm);font-weight:700;font-size:16px;transition:var(--transition);}
 .btn-checkout:hover{filter:brightness(1.1);}
 .btn-checkout:disabled{background:var(--text-muted);cursor:not-allowed;}
+.btn-clear-cart{width:100%;padding:10px;background:transparent;color:var(--danger);border:1px solid var(--danger);border-radius:var(--radius-sm);font-weight:600;font-size:14px;transition:var(--transition);margin-top:8px;}
+.btn-clear-cart:hover{background:var(--danger);color:#fff;}
 
 /* ============ CHECKOUT MODAL ============ */
 .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:3000;display:none;align-items:center;justify-content:center;padding:20px;}
@@ -547,6 +549,7 @@ const SUPABASE_READY = !!_supabase;
     <div class="cart-subtotal"><span>Subtotal:</span><span id="cartSubtotal">R$ 0,00</span></div>
     <div class="cart-total"><span>Total:</span><span id="cartTotal">R$ 0,00</span></div>
     <button class="btn-checkout" onclick="openCheckout()">Finalizar Pedido</button>
+    <button class="btn-clear-cart" onclick="clearCart()">🗑️ Limpar Carrinho</button>
   </div>
 </div>
 
@@ -919,6 +922,57 @@ let favorites = DB.get('favorites', []);
 let orderCounter = DB.get('orderCounter', 0);
 let _pendingCheckout = false;
 
+// ============ USER-SPECIFIC CART/FAVORITES SYNC ============
+function saveCart() {
+  if (currentClient) {
+    DB.set('cart_' + currentClient.id, cart);
+  } else {
+    saveCart();
+  }
+}
+
+function saveFavorites() {
+  if (currentClient) {
+    DB.set('favorites_' + currentClient.id, favorites);
+  } else {
+    saveFavorites();
+  }
+}
+
+// Load cart/favorites from Supabase when user logs in (merge with local)
+function loadUserCartFavorites() {
+  if (!currentClient) return;
+  const cid = currentClient.id;
+  // Load cloud cart
+  const cloudCart = DB.get('cart_' + cid, []);
+  if (cart.length > 0 && cloudCart.length > 0) {
+    // Merge local cart into cloud cart
+    cart.forEach(item => {
+      const existing = cloudCart.find(c => c.id === item.id);
+      if (existing) existing.qty += item.qty;
+      else cloudCart.push(item);
+    });
+    cart = cloudCart;
+  } else if (cloudCart.length > 0) {
+    cart = cloudCart;
+  }
+  // Save merged to cloud
+  DB.set('cart_' + cid, cart);
+  // Clear local cart since it's now in cloud
+  try { localStorage.removeItem('cat_cart'); } catch(e) {}
+
+  // Load cloud favorites
+  const cloudFav = DB.get('favorites_' + cid, []);
+  favorites.forEach(id => { if (!cloudFav.includes(id)) cloudFav.push(id); });
+  favorites = cloudFav;
+  DB.set('favorites_' + cid, favorites);
+  try { localStorage.removeItem('cat_favorites'); } catch(e) {}
+
+  renderCart();
+  updateFavBadge();
+  renderProducts();
+}
+
 // ============ INIT ============
 async function init() {
   await DB.init();
@@ -949,6 +1003,7 @@ async function init() {
   startBannerCarousel();
   startSessionCheck();
   restoreClientSession();
+  loadUserCartFavorites();
   
   // Fade in
   document.body.style.opacity = '1';
@@ -1149,7 +1204,7 @@ function toggleFav(id) {
   const idx = favorites.indexOf(id);
   if (idx > -1) { favorites.splice(idx, 1); toast('Removido dos favoritos', 'info'); }
   else { favorites.push(id); toast('Adicionado aos favoritos ❤️', 'success'); }
-  DB.set('favorites', favorites);
+  saveFavorites();
   renderProducts();
   updateFavBadge();
 }
@@ -1201,15 +1256,24 @@ function addToCart(id) {
   } else {
     cart.push({ id, name: product.name, price: product.price, image: product.image, qty: 1 });
   }
-  DB.set('cart', cart);
+  saveCart();
   renderCart();
   toast(`${product.name} adicionado ao carrinho! 🛒`, 'success');
 }
 
 function removeFromCart(id) {
   cart = cart.filter(c => c.id !== id);
-  DB.set('cart', cart);
+  saveCart();
   renderCart();
+}
+
+function clearCart() {
+  if (cart.length === 0) return;
+  if (!confirm('Deseja realmente limpar todo o carrinho?')) return;
+  cart = [];
+  saveCart();
+  renderCart();
+  toast('Carrinho limpo!', 'info');
 }
 
 function changeQty(id, delta) {
@@ -1227,7 +1291,7 @@ function changeQty(id, delta) {
   if (item.qty <= 0) {
     removeFromCart(id);
   } else {
-    DB.set('cart', cart);
+    saveCart();
     renderCart();
   }
 }
@@ -1410,7 +1474,7 @@ function submitOrder(method) {
   
   // Clear cart
   cart = [];
-  DB.set('cart', cart);
+  saveCart();
   renderCart();
   
   // Show success
@@ -1742,7 +1806,7 @@ function addDetailToCart(id) {
   } else {
     cart.push({id, name: product.name, price: product.price, image: product.image, qty: qty});
   }
-  DB.set('cart', cart);
+  saveCart();
   renderCart();
   toast(qty + 'x ' + product.name + ' adicionado ao carrinho! 🛒', 'success');
   detailQtyVal = 1;
@@ -1809,6 +1873,7 @@ function doClientLogin() {
   DB.set('currentClient', { id: client.id });
   closeClientLogin();
   updateClientMenuBtn();
+  loadUserCartFavorites();
   if (_pendingCheckout) {
     _pendingCheckout = false;
     openCheckout();
@@ -1856,6 +1921,7 @@ function doClientRegister() {
   DB.set('currentClient', { id: client.id });
   closeClientLogin();
   updateClientMenuBtn();
+  loadUserCartFavorites();
   
   // Clear form
   ['regName','regSurname','regWhatsapp','regEmail','regPass','regPass2'].forEach(id => document.getElementById(id).value = '');
@@ -1989,6 +2055,9 @@ function clientCancelOrder(id) {
 }
 
 function clientLogout() {
+  // Save current cart/favorites to local before clearing session
+  try { localStorage.setItem('cat_cart', JSON.stringify(cart)); } catch(e) {}
+  try { localStorage.setItem('cat_favorites', JSON.stringify(favorites)); } catch(e) {}
   currentClient = null;
   DB.remove('currentClient');
   closeClientAccount();
@@ -2120,6 +2189,17 @@ async function reloadFromSupabase() {
   renderProducts();
   renderCart();
   renderFooter();
+  // Reload user cart/favorites if logged in
+  if (currentClient) {
+    const cid = currentClient.id;
+    const cloudCart = DB.get('cart_' + cid, []);
+    if (cloudCart.length > 0) cart = cloudCart;
+    const cloudFav = DB.get('favorites_' + cid, []);
+    if (cloudFav.length > 0) favorites = cloudFav;
+    renderCart();
+    updateFavBadge();
+    renderProducts();
+  }
   toast('Dados sincronizados! ✓', 'success');
 }
 
