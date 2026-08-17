@@ -1190,6 +1190,12 @@ function addToCart(id) {
   const product = products.find(p => p.id === id);
   if (!product) return;
   const existing = cart.find(c => c.id === id);
+  const currentQty = existing ? existing.qty : 0;
+  const stock = (product.stock !== undefined && product.stock !== null) ? product.stock : Infinity;
+  if (currentQty + 1 > stock) {
+    toast(`Estoque insuficiente! Disponível: ${stock} unidade(s)`, 'error');
+    return;
+  }
   if (existing) {
     existing.qty++;
   } else {
@@ -1209,6 +1215,14 @@ function removeFromCart(id) {
 function changeQty(id, delta) {
   const item = cart.find(c => c.id === id);
   if (!item) return;
+  if (delta > 0) {
+    const product = products.find(p => p.id === id);
+    const stock = (product && product.stock !== undefined && product.stock !== null) ? product.stock : Infinity;
+    if (item.qty + delta > stock) {
+      toast(`Estoque insuficiente! Máximo: ${stock} unidade(s)`, 'error');
+      return;
+    }
+  }
   item.qty += delta;
   if (item.qty <= 0) {
     removeFromCart(id);
@@ -1334,6 +1348,15 @@ function submitOrder(method) {
   if (!name || !surname || !whatsapp || !email) {
     toast('Preencha todos os campos!', 'error');
     return;
+  }
+
+  // Validação de estoque antes de finalizar
+  for (const item of cart) {
+    const product = products.find(p => p.id === item.id);
+    if (product && product.stock !== undefined && product.stock !== null && item.qty > product.stock) {
+      toast(`Estoque insuficiente para ${item.name}! Disponível: ${product.stock} unidade(s)`, 'error');
+      return;
+    }
   }
 
   // Link to existing client if logged in or matching email/whatsapp
@@ -2002,15 +2025,44 @@ function renderAdminClients() {
           <div class="info">
             <strong>${c.name} ${c.surname}</strong>
             <span>📱 ${c.whatsapp} · ✉️ ${c.email} · ${clientOrders.length} pedido(s) · Desde ${c.createdDate}</span>
+            <span style="display:block;margin-top:4px;font-size:13px">🔑 Senha: <span id="pass_${c.id}" style="font-family:monospace;letter-spacing:2px">••••</span> <button class="btn btn-sm" style="padding:2px 8px;font-size:12px;background:var(--bg-muted)" onclick="togglePassView(${c.id})">👁️ Ver</button> <button class="btn btn-sm" style="padding:2px 8px;font-size:12px;background:var(--warning);color:#333" onclick="changeClientPass(${c.id})">✏️ Alterar Senha</button></span>
           </div>
           <div class="actions" style="display:flex;gap:6px">
-            <button class="btn btn-secondary btn-sm" onclick="editClient(${c.id})">✏️</button>
+            <button class="btn btn-secondary btn-sm" onclick="editClient(${c.id})">✏️ Editar</button>
             <button class="btn btn-danger btn-sm" onclick="deleteClient(${c.id})">🗑️</button>
           </div>
         </div>
       `;
     }).join('')}
   `;
+}
+
+function togglePassView(id) {
+  const client = clients.find(c => c.id === id);
+  if (!client) return;
+  const el = document.getElementById('pass_' + id);
+  if (el.textContent === '••••') {
+    el.textContent = client.password || '(sem senha)';
+    el.style.letterSpacing = '0';
+  } else {
+    el.textContent = '••••';
+    el.style.letterSpacing = '2px';
+  }
+}
+
+function changeClientPass(id) {
+  const client = clients.find(c => c.id === id);
+  if (!client) return;
+  const newPass = prompt('Nova senha para ' + client.name + ' ' + client.surname + ':', '');
+  if (newPass === null) return;
+  if (newPass.length < 4) {
+    toast('Senha deve ter no mínimo 4 dígitos', 'error');
+    return;
+  }
+  client.password = newPass;
+  DB.set('clients', clients);
+  toast('Senha alterada com sucesso!', 'success');
+  switchAdminTab('clients', document.querySelectorAll('.admin-tab')[9]);
 }
 
 function editClient(id) {
