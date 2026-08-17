@@ -2018,8 +2018,16 @@ function renderClientOrders() {
       statusMsg = '<div style="font-size:13px;color:var(--success);margin-top:8px;font-weight:600">✅ Pedido concluído!</div>';
     } else if (o.status === 'transit') {
       statusMsg = '<div style="font-size:13px;color:var(--info);margin-top:8px;font-weight:600">🚚 Pedido em trânsito!</div>';
+      if (o.trackingCode) {
+        statusMsg += '<div style="margin-top:8px;padding:10px 14px;background:var(--bg-muted);border-radius:var(--radius-sm);border:1px solid var(--border)">';
+        statusMsg += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">📦 Código de Rastreio:</div>';
+        statusMsg += '<div style="display:flex;align-items:center;gap:8px">';
+        statusMsg += '<code style="font-size:15px;font-weight:700;letter-spacing:1px;color:var(--info);font-family:monospace">' + o.trackingCode + '</code>';
+        statusMsg += '<button onclick="navigator.clipboard.writeText(\'' + o.trackingCode + '\').then(()=>toast(\'Código copiado!\',\'success\'))" style="background:var(--bg-muted);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;cursor:pointer;font-size:13px">📋 Copiar</button>';
+        statusMsg += '</div></div>';
+      }
       if (o.tracking) {
-        statusMsg += '<a href="' + o.tracking + '" target="_blank" style="display:inline-block;margin-top:6px;padding:8px 16px;background:var(--info);color:#fff;border-radius:var(--radius-sm);font-size:13px;font-weight:600;text-decoration:none">📦 Rastrear pedido</a>';
+        statusMsg += '<a href="' + o.tracking + '" target="_blank" style="display:inline-block;margin-top:8px;padding:8px 16px;background:var(--info);color:#fff;border-radius:var(--radius-sm);font-size:13px;font-weight:600;text-decoration:none">📦 Rastrear pedido</a>';
       }
     } else if (o.status === 'cancelled' || o.status === 'cancelled-by-client') {
       statusMsg = '<div style="font-size:13px;color:var(--danger);margin-top:8px;font-weight:600">❌ Pedido cancelado</div>';
@@ -2616,6 +2624,7 @@ function openTransitDialog(id) {
   const order = orders.find(o => o.id === id);
   if (!order) return;
   const currentTracking = order.tracking || '';
+  const currentTrackingCode = order.trackingCode || '';
   const html = `
     <div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:5000;display:flex;align-items:center;justify-content:center" id="transitOverlay" onclick="if(event.target===this)this.remove()">
       <div style="background:var(--bg-card);border-radius:var(--radius);padding:24px;max-width:400px;width:90%;box-shadow:var(--shadow-lg)">
@@ -2625,6 +2634,10 @@ function openTransitDialog(id) {
         </div>
         <p style="font-size:14px;color:var(--text-muted);margin-bottom:14px">Pedido #${String(order.number).padStart(3,'0')} — ${order.customerName}</p>
         <div class="form-group">
+          <label>Código de Rastreio (opcional)</label>
+          <input type="text" id="transitTrackingCodeInput" placeholder="Ex: BR123456789XX" value="${currentTrackingCode || ''}" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:14px;font-family:monospace;letter-spacing:1px">
+        </div>
+        <div class="form-group" style="margin-top:12px">
           <label>Link de Rastreio (opcional)</label>
           <input type="text" id="transitTrackingInput" placeholder="https://link.correios.com.br/..." value="${currentTracking}" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:14px">
         </div>
@@ -2636,14 +2649,16 @@ function openTransitDialog(id) {
 
 function setTransitStatus(id) {
   const tracking = document.getElementById('transitTrackingInput') ? document.getElementById('transitTrackingInput').value.trim() : '';
+  const trackingCode = document.getElementById('transitTrackingCodeInput') ? document.getElementById('transitTrackingCodeInput').value.trim() : '';
   const order = orders.find(o => o.id === id);
   if (order) {
     order.status = 'transit';
     order.tracking = tracking || undefined;
+    order.trackingCode = trackingCode || undefined;
     DB.set('orders', orders);
     document.getElementById('transitOverlay').remove();
     filterOrders();
-    toast('Pedido marcado como Em Trânsito!', 'success');
+    toast('Pedido marcado como Em Trânsito!' + (trackingCode ? ' Código: ' + trackingCode : ''), 'success');
   }
 }
 
