@@ -1650,33 +1650,22 @@ function renderCouponApplied() {
 
 function calculateDiscount() {
   if (!appliedCoupon) return 0;
-  // Aplica desconto apenas nos produtos que aceitam cupom
-  let discountable = 0;
-  cart.forEach(item => {
-    const p = products.find(prod => prod.id === item.id);
-    if (p && p.couponEnabled) discountable += item.price * item.qty;
-  });
-  return discountable * (appliedCoupon.percentage / 100);
+  // Aplica desconto sobre o total do carrinho
+  const subtotal = cart.reduce((s, c) => s + (c.price * c.qty), 0);
+  return subtotal * (appliedCoupon.percentage / 100);
 }
 
 function updateCheckoutTotal() {
   const summary = document.getElementById('orderSummary');
   if (!summary) return;
-  let total = 0;
-  let discountable = 0;
-  cart.forEach(item => {
-    const t = item.price * item.qty;
-    total += t;
-    const p = products.find(prod => prod.id === item.id);
-    if (p && p.couponEnabled) discountable += t;
-  });
+  let total = cart.reduce((s, c) => s + (c.price * c.qty), 0);
   let html = '<h4>Resumo do Pedido</h4>' + cart.map(item => {
     const t = item.price * item.qty;
     return `<div class="order-summary-item"><span>${item.name} (${item.qty}x)</span><span>R$ ${t.toFixed(2).replace('.',',')}</span></div>`;
   }).join('');
-  if (appliedCoupon && discountable > 0) {
-    const discount = discountable * (appliedCoupon.percentage / 100);
-    html += `<div class="order-summary-item" style="color:var(--success)"><span>Desconto (${appliedCoupon.code})</span><span>- R$ ${discount.toFixed(2).replace('.',',')}</span></div>`;
+  if (appliedCoupon && total > 0) {
+    const discount = total * (appliedCoupon.percentage / 100);
+    html += `<div class="order-summary-item" style="color:var(--success)"><span>Desconto (${appliedCoupon.code} ${appliedCoupon.percentage}%)</span><span>- R$ ${discount.toFixed(2).replace('.',',')}</span></div>`;
     total -= discount;
   }
   html += `<div class="order-summary-item" style="font-weight:800;margin-top:8px;border-top:1px solid var(--border);padding-top:8px"><span>Total</span><span>R$ ${total.toFixed(2).replace('.',',')}</span></div>`;
