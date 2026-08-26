@@ -104,8 +104,7 @@ a{color:inherit;text-decoration:none;}
 .product-card:hover{box-shadow:var(--shadow-lg);transform:translateY(-4px);}
 .product-card.hidden-product{display:none;}
 .product-img-wrap{position:relative;width:100%;height:200px;overflow:hidden;background:var(--bg-muted);}
-.product-img-wrap img{width:100%;height:100%;object-fit:cover;transition:transform .3s;}
-.product-card:hover .product-img-wrap img{transform:scale(1.08);}
+.product-card:hover .product-img-wrap .product-img-slide.active{transform:scale(1.08);transition:transform .3s;}
 .product-badges{position:absolute;top:8px;left:8px;display:flex;flex-direction:column;gap:4px;z-index:2;}
 .product-badge{padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:.5px;}
 .badge-new{background:var(--info);}
@@ -412,9 +411,18 @@ a{color:inherit;text-decoration:none;}
 .image-gallery-uploads{display:flex;gap:10px;flex-wrap:wrap;}
 .image-gallery-uploads .image-upload{width:100px;height:100px;}
 .image-gallery-uploads .image-upload img{max-height:90px;}
-.product-img-wrap{position:relative;overflow:hidden;}
-.product-img-wrap .product-img-slide{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.6s ease-in-out;}
-.product-img-wrap .product-img-slide.active{opacity:1;position:relative;}
+.product-img-wrap{position:relative;width:100%;height:200px;overflow:hidden;background:var(--bg-muted);}
+.product-img-wrap .product-img-slide{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.5s ease-in-out;}
+.product-img-wrap .product-img-slide.active{opacity:1;}
+.product-img-wrap .product-img-slide:first-child{position:relative;}
+.product-carousel-btn{position:absolute;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.45);color:#fff;border:none;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:5;opacity:0;transition:opacity .2s;}
+.product-card:hover .product-carousel-btn{opacity:1;}
+.product-carousel-btn:hover{background:rgba(0,0,0,.7);}
+.product-carousel-btn.prev{left:6px;}
+.product-carousel-btn.next{right:6px;}
+.product-carousel-dots{position:absolute;bottom:6px;left:50%;transform:translateX(-50%);display:flex;gap:4px;z-index:5;}
+.product-carousel-dot{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.5);transition:background .2s;}
+.product-carousel-dot.active{background:#fff;}
 .detail-gallery{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}
 .detail-gallery-thumb{width:70px;height:70px;border-radius:8px;object-fit:cover;cursor:pointer;border:2px solid transparent;transition:border 0.2s;}
 .detail-gallery-thumb.active{border-color:var(--primary);}
@@ -1189,8 +1197,13 @@ function renderProducts() {
         ${p.featured ? '<span class="product-badge badge-featured">Destaque</span>' : ''}
       </div>
       <div class="fav-btn ${isFav?'active':''}" onclick="toggleFav(${p.id})">${isFav?'❤️':'🤍'}</div>
-      <div class="product-img-wrap" onclick="openProductDetail(${p.id})" style="cursor:pointer" id="imgWrap-${p.id}">
+      <div class="product-img-wrap" id="imgWrap-${p.id}" data-current="0">
         ${(p.images && p.images.length > 0 ? p.images : (p.image ? [p.image] : [])).map((img, i) => `<img src="${img}" alt="${p.name}" class="product-img-slide ${i===0?'active':''}">`).join('') || '<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:48px;opacity:.2">📦</div>'}
+        ${((p.images && p.images.length > 1) || (p.image && p.images && p.images.length > 1)) ? `
+        <button class="product-carousel-btn prev" onclick="event.stopPropagation();carouselSlide(${p.id},-1)">‹</button>
+        <button class="product-carousel-btn next" onclick="event.stopPropagation();carouselSlide(${p.id},1)">›</button>
+        <div class="product-carousel-dots">${(p.images || []).map((_,i) => `<div class="product-carousel-dot ${i===0?'active':''}"></div>`).join('')}</div>
+        ` : ''}
       </div>
       <div class="product-info">
         <div class="product-cat">${p.category || 'Geral'}</div>
@@ -1217,13 +1230,31 @@ function startImageCarousel() {
     document.querySelectorAll('.product-img-wrap').forEach(wrap => {
       const slides = wrap.querySelectorAll('.product-img-slide');
       if (slides.length < 2) return;
-      const active = wrap.querySelector('.product-img-slide.active');
-      let next = active ? active.nextElementSibling : null;
-      if (!next || !next.classList.contains('product-img-slide')) next = slides[0];
-      active.classList.remove('active');
-      next.classList.add('active');
+      let current = parseInt(wrap.dataset.current || '0');
+      let next = (current + 1) % slides.length;
+      updateCarouselSlide(wrap, current, next);
     });
   }, 4000);
+}
+
+function carouselSlide(productId, dir) {
+  const wrap = document.getElementById('imgWrap-' + productId);
+  if (!wrap) return;
+  const slides = wrap.querySelectorAll('.product-img-slide');
+  if (slides.length < 2) return;
+  let current = parseInt(wrap.dataset.current || '0');
+  let next = (current + dir + slides.length) % slides.length;
+  updateCarouselSlide(wrap, current, next);
+}
+
+function updateCarouselSlide(wrap, oldIdx, newIdx) {
+  const slides = wrap.querySelectorAll('.product-img-slide');
+  const dots = wrap.querySelectorAll('.product-carousel-dot');
+  slides[oldIdx]?.classList.remove('active');
+  slides[newIdx]?.classList.add('active');
+  if (dots[oldIdx]) dots[oldIdx].classList.remove('active');
+  if (dots[newIdx]) dots[newIdx].classList.add('active');
+  wrap.dataset.current = newIdx;
 }
 
 // ============ FAVORITES ============
