@@ -409,6 +409,16 @@ a{color:inherit;text-decoration:none;}
 .image-upload{width:100%;height:120px;border:2px dashed var(--border);border-radius:var(--radius-sm);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;transition:var(--transition);background:var(--bg);}
 .image-upload:hover{border-color:var(--primary);background:var(--bg-muted);}
 .image-upload img{max-height:110px;object-fit:contain;}
+.image-gallery-uploads{display:flex;gap:10px;flex-wrap:wrap;}
+.image-gallery-uploads .image-upload{width:100px;height:100px;}
+.image-gallery-uploads .image-upload img{max-height:90px;}
+.product-img-wrap{position:relative;overflow:hidden;}
+.product-img-wrap .product-img-slide{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.6s ease-in-out;}
+.product-img-wrap .product-img-slide.active{opacity:1;position:relative;}
+.detail-gallery{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;}
+.detail-gallery-thumb{width:70px;height:70px;border-radius:8px;object-fit:cover;cursor:pointer;border:2px solid transparent;transition:border 0.2s;}
+.detail-gallery-thumb.active{border-color:var(--primary);}
+.detail-gallery-thumb:hover{border-color:var(--primary);}
 .stat-card{background:var(--bg);border-radius:var(--radius);padding:20px;text-align:center;border:1px solid var(--border);}
 .stat-card .stat-value{font-size:32px;font-weight:800;color:var(--primary);}
 .stat-card .stat-label{font-size:13px;color:var(--text-muted);margin-top:4px;}
@@ -1179,8 +1189,8 @@ function renderProducts() {
         ${p.featured ? '<span class="product-badge badge-featured">Destaque</span>' : ''}
       </div>
       <div class="fav-btn ${isFav?'active':''}" onclick="toggleFav(${p.id})">${isFav?'❤️':'🤍'}</div>
-      <div class="product-img-wrap" onclick="openProductDetail(${p.id})" style="cursor:pointer">
-        ${p.image ? `<img src="${p.image}" alt="${p.name}">` : `<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:48px;opacity:.2">📦</div>`}
+      <div class="product-img-wrap" onclick="openProductDetail(${p.id})" style="cursor:pointer" id="imgWrap-${p.id}">
+        ${(p.images && p.images.length > 0 ? p.images : (p.image ? [p.image] : [])).map((img, i) => `<img src="${img}" alt="${p.name}" class="product-img-slide ${i===0?'active':''}">`).join('') || '<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:48px;opacity:.2">📦</div>'}
       </div>
       <div class="product-info">
         <div class="product-cat">${p.category || 'Geral'}</div>
@@ -1197,6 +1207,23 @@ function renderProducts() {
       </div>
     </div>`;
   }).join('');
+  startImageCarousel();
+}
+
+let carouselInterval = null;
+function startImageCarousel() {
+  if (carouselInterval) clearInterval(carouselInterval);
+  carouselInterval = setInterval(() => {
+    document.querySelectorAll('.product-img-wrap').forEach(wrap => {
+      const slides = wrap.querySelectorAll('.product-img-slide');
+      if (slides.length < 2) return;
+      const active = wrap.querySelector('.product-img-slide.active');
+      let next = active ? active.nextElementSibling : null;
+      if (!next || !next.classList.contains('product-img-slide')) next = slides[0];
+      active.classList.remove('active');
+      next.classList.add('active');
+    });
+  }, 4000);
 }
 
 // ============ FAVORITES ============
@@ -1254,7 +1281,7 @@ function addToCart(id) {
   if (existing) {
     existing.qty++;
   } else {
-    cart.push({ id, name: product.name, price: product.price, image: product.image, qty: 1 });
+    cart.push({ id, name: product.name, price: product.price, image: (product.images?.[0] || product.image), qty: 1 });
   }
   saveCart();
   renderCart();
@@ -1701,17 +1728,41 @@ function renderFooter() {
 }
 
 // ============ PRODUCT DETAIL PAGE ============
+let detailImageIndex = 0;
+let detailImages = [];
+
+function switchDetailImage(idx) {
+  const product = products.find(p => p.id === editingDetailProductId);
+  const imgs = detailImages;
+  if (idx < 0 || idx >= imgs.length) return;
+  detailImageIndex = idx;
+  const mainImg = document.getElementById('detailMainImg');
+  if (mainImg) mainImg.src = imgs[idx];
+  document.querySelectorAll('.detail-gallery-thumb').forEach((t, i) => {
+    t.classList.toggle('active', i === idx);
+  });
+}
+
+let editingDetailProductId = null;
+
 function openProductDetail(id) {
+  editingDetailProductId = id;
   const product = products.find(p => p.id === id);
   if (!product) return;
   
   const isFav = favorites.includes(id);
   const inStock = product.stock === undefined || product.stock === null || product.stock > 0;
+  detailImages = (product.images && product.images.length > 0) ? product.images : (product.image ? [product.image] : []);
   
   // Build detail HTML
   document.getElementById('detailContainer').innerHTML = `
-    <div class="detail-image-wrap">
-      ${product.image ? `<img src="${product.image}" alt="${product.name}">` : '<div style="font-size:80px;opacity:.2">📦</div>'}
+    <div>
+      <div class="detail-image-wrap" id="detailMainImage">
+        ${(product.images && product.images.length > 0 ? product.images[0] : product.image) ? `<img src="${product.images ? product.images[0] : product.image}" alt="${product.name}" id="detailMainImg">` : '<div style="font-size:80px;opacity:.2">📦</div>'}
+      </div>
+      ${(product.images && product.images.length > 1) ? `<div class="detail-gallery" id="detailGallery">
+        ${product.images.map((img, i) => `<img src="${img}" class="detail-gallery-thumb ${i===0?'active':''}" onclick="switchDetailImage(${i})" data-src="${img}">`).join('')}
+      </div>` : ''}
     </div>
     <div class="detail-info">
       ${product.badgeNew || product.badgePromo || product.featured ? `<div class="detail-badges">
@@ -1752,7 +1803,7 @@ function openProductDetail(id) {
       <div class="related-grid">
         ${related.map(r => `
           <div class="related-card" onclick="openProductDetail(${r.id})">
-            ${r.image ? `<img src="${r.image}" alt="${r.name}">` : '<div style="height:140px;background:var(--bg-muted);display:flex;align-items:center;justify-content:center;font-size:32px;opacity:.2">📦</div>'}
+            ${(r.images?.[0] || r.image) ? `<img src="${r.images?.[0] || r.image}" alt="${r.name}">` : '<div style="height:140px;background:var(--bg-muted);display:flex;align-items:center;justify-content:center;font-size:32px;opacity:.2">📦</div>'}
             <div class="info">
               <div class="name">${r.name}</div>
               <div class="price">R$ ${(r.price||0).toFixed(2).replace('.',',')}</div>
@@ -1793,7 +1844,7 @@ function addDetailToCart(id) {
   if (existing) {
     existing.qty += qty;
   } else {
-    cart.push({id, name: product.name, price: product.price, image: product.image, qty: qty});
+    cart.push({id, name: product.name, price: product.price, image: (product.images?.[0] || product.image), qty: qty});
   }
   saveCart();
   renderCart();
@@ -2385,7 +2436,7 @@ function renderAdminProducts() {
     <div class="admin-grid" id="adminProductsGrid">
       ${products.map(p => `
         <div class="admin-product-card">
-          ${p.image ? `<img src="${p.image}">` : `<div style="height:140px;display:flex;align-items:center;justify-content:center;background:var(--bg-muted);font-size:32px;opacity:.3">📦</div>`}
+          ${(p.images?.[0] || p.image) ? `<img src="${p.images?.[0] || p.image}">` : `<div style="height:140px;display:flex;align-items:center;justify-content:center;background:var(--bg-muted);font-size:32px;opacity:.3">📦</div>`}
           <div class="card-info">
             <div style="font-weight:700;font-size:14px">${p.name}</div>
             <div style="font-size:12px;color:var(--text-muted)">${p.category || ''}</div>
@@ -2420,12 +2471,26 @@ function openProductForm(product = null) {
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label>Imagem do Produto</label>
-            <div class="image-upload" id="productImageUpload" onclick="document.getElementById('productImageInput').click()">
-              ${product && product.image ? `<img src="${product.image}">` : '<span>📷 Clique para enviar imagem</span>'}
+            <label>Imagens do Produto (até 3)</label>
+            <div class="image-gallery-uploads">
+              <div class="image-upload" id="productImage1Upload" onclick="document.getElementById('productImage1Input').click()">
+                ${(product && (product.images?.[0] || product.image)) ? `<img src="${product.images?.[0] || product.image}">` : '<span style="font-size:11px;text-align:center">📷 Imagem 1<br>(principal)</span>'}
+              </div>
+              <input type="file" id="productImage1Input" accept="image/*" style="display:none" onchange="handleProductImage(this,1)">
+              <input type="hidden" id="productImage1Hidden" value="${product ? (product.images?.[0] || product.image || '') : ''}">
+
+              <div class="image-upload" id="productImage2Upload" onclick="document.getElementById('productImage2Input').click()">
+                ${(product && product.images?.[1]) ? `<img src="${product.images[1]}">` : '<span style="font-size:11px;text-align:center">📷 Imagem 2<br>(opcional)</span>'}
+              </div>
+              <input type="file" id="productImage2Input" accept="image/*" style="display:none" onchange="handleProductImage(this,2)">
+              <input type="hidden" id="productImage2Hidden" value="${product ? (product.images?.[1] || '') : ''}">
+
+              <div class="image-upload" id="productImage3Upload" onclick="document.getElementById('productImage3Input').click()">
+                ${(product && product.images?.[2]) ? `<img src="${product.images[2]}">` : '<span style="font-size:11px;text-align:center">📷 Imagem 3<br>(opcional)</span>'}
+              </div>
+              <input type="file" id="productImage3Input" accept="image/*" style="display:none" onchange="handleProductImage(this,3)">
+              <input type="hidden" id="productImage3Hidden" value="${product ? (product.images?.[2] || '') : ''}">
             </div>
-            <input type="file" id="productImageInput" accept="image/*" style="display:none" onchange="handleProductImage(this)">
-            <input type="hidden" id="productImageHidden" value="${product ? product.image || '' : ''}">
           </div>
           <div class="form-group">
             <label>Nome *</label>
@@ -2490,13 +2555,13 @@ function closeProductForm() {
   editingProductId = null;
 }
 
-function handleProductImage(input) {
+function handleProductImage(input, slot) {
   const file = input.files[0];
   if (!file) return;
-  document.getElementById('productImageUpload').innerHTML = '<span style="font-size:13px;color:var(--text-muted)">⏳ Processando imagem...</span>';
+  document.getElementById('productImage'+slot+'Upload').innerHTML = '<span style="font-size:13px;color:var(--text-muted)">⏳...</span>';
   compressImage(file, 800, 800, 0.75, function(result) {
-    document.getElementById('productImageUpload').innerHTML = `<img src="${result}">`;
-    document.getElementById('productImageHidden').value = result;
+    document.getElementById('productImage'+slot+'Upload').innerHTML = `<img src="${result}">`;
+    document.getElementById('productImage'+slot+'Hidden').value = result;
   });
 }
 
@@ -2513,7 +2578,8 @@ function saveProduct() {
     code: document.getElementById('productCode').value.trim(),
     stock: document.getElementById('productStock').value === '' ? null : parseInt(document.getElementById('productStock').value),
     order: parseInt(document.getElementById('productOrder').value) || 0,
-    image: document.getElementById('productImageHidden').value,
+    image: document.getElementById('productImage1Hidden').value,
+    images: [document.getElementById('productImage1Hidden').value, document.getElementById('productImage2Hidden').value, document.getElementById('productImage3Hidden').value].filter(Boolean),
     featured: document.getElementById('productFeatured').checked,
     hidden: document.getElementById('productHidden').checked,
     badgeNew: document.getElementById('productNew').checked,
