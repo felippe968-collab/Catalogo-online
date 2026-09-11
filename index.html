@@ -471,7 +471,7 @@ const SUPABASE_READY = !!_supabase;
   <div class="header-right">
     <div class="search-box">
       <span>🔍</span>
-      <input type="text" id="searchInput" placeholder="Buscar produtos..." oninput="renderProducts()">
+      <input type="search" id="searchInput" name="busca-produtos-catalogo" autocomplete="off" data-lpignore="true" data-form-type="other" role="searchbox" placeholder="Buscar produtos..." oninput="renderProducts()">
     </div>
     <button class="icon-btn" onclick="toggleTheme()" id="themeBtn" title="Modo escuro/claro">🌙</button>
     <button class="icon-btn" onclick="openCart()" title="Carrinho">
