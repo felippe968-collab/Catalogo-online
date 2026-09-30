@@ -2522,6 +2522,10 @@ function openProductForm(product = null) {
               <input type="file" id="productImage3Input" accept="image/*" style="display:none" onchange="handleProductImage(this,3)">
               <input type="hidden" id="productImage3Hidden" value="${product ? (product.images?.[2] || '') : ''}">
             </div>
+            <div style="margin-top:10px;font-size:12px;color:var(--text-muted)">Ou cole o link da imagem (ex: imgbb) em vez de enviar um arquivo:</div>
+            <input type="text" id="productImage1Url" placeholder="Link imagem 1 (principal)" style="margin-top:6px" value="${(product && product.images?.[0] && !product.images[0].startsWith('data:')) ? product.images[0] : ''}" oninput="handleProductImageUrl(this,1)">
+            <input type="text" id="productImage2Url" placeholder="Link imagem 2 (opcional)" style="margin-top:6px" value="${(product && product.images?.[1] && !product.images[1].startsWith('data:')) ? product.images[1] : ''}" oninput="handleProductImageUrl(this,2)">
+            <input type="text" id="productImage3Url" placeholder="Link imagem 3 (opcional)" style="margin-top:6px" value="${(product && product.images?.[2] && !product.images[2].startsWith('data:')) ? product.images[2] : ''}" oninput="handleProductImageUrl(this,3)">
           </div>
           <div class="form-group">
             <label>Nome *</label>
@@ -2593,7 +2597,23 @@ function handleProductImage(input, slot) {
   compressImage(file, 800, 800, 0.75, function(result) {
     document.getElementById('productImage'+slot+'Upload').innerHTML = `<img src="${result}">`;
     document.getElementById('productImage'+slot+'Hidden').value = result;
+    const urlInput = document.getElementById('productImage'+slot+'Url');
+    if (urlInput) urlInput.value = '';
   });
+}
+
+function handleProductImageUrl(input, slot) {
+  const url = input.value.trim();
+  const box = document.getElementById('productImage'+slot+'Upload');
+  const hidden = document.getElementById('productImage'+slot+'Hidden');
+  if (url) {
+    hidden.value = url;
+    box.innerHTML = `<img src="${url}" onerror="this.parentElement.innerHTML='<span style=\'font-size:11px;color:var(--danger,#e33)\'>⚠️ Link inválido</span>'">`;
+  } else {
+    hidden.value = '';
+    const labels = {1:'Imagem 1<br>(principal)', 2:'Imagem 2<br>(opcional)', 3:'Imagem 3<br>(opcional)'};
+    box.innerHTML = `<span style="font-size:11px;text-align:center">📷 ${labels[slot]}</span>`;
+  }
 }
 
 function saveProduct() {
