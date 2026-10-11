@@ -458,6 +458,9 @@ const _supabase = (SUPABASE_CONFIG.url && SUPABASE_CONFIG.url !== 'COLE_AQUI_SUA
   : null;
 
 const SUPABASE_READY = !!_supabase;
+// Se true, o login administrativo usa o Supabase Auth (verificação no servidor).
+// Se false, cai no modo antigo (credenciais locais) — só usado se o Supabase estiver fora.
+const ADMIN_AUTH_MODE = !!(window.supabase && _supabase && _supabase.auth);
 </script>
 </head>
 <body>
@@ -524,9 +527,10 @@ const SUPABASE_READY = !!_supabase;
     <!-- LOGIN FORM -->
     <div class="client-login-form" id="clientLoginForm">
       <div class="client-login-info">Acesse para acompanhar seus pedidos</div>
-      <input type="text" id="clientLoginUser" placeholder="E-mail ou WhatsApp" onkeydown="if(event.key==='Enter')doClientLogin()">
+      <input type="text" id="clientLoginUser" placeholder="E-mail" onkeydown="if(event.key==='Enter')doClientLogin()">
       <input type="password" id="clientLoginPass" placeholder="Senha" onkeydown="if(event.key==='Enter')doClientLogin()">
       <button onclick="doClientLogin()">Entrar</button>
+<div style="text-align:center;margin-top:8px"><a href="#" onclick="clientForgotPassword();return false" style="font-size:12px;color:var(--primary)">Esqueci minha senha</a></div>
     </div>
     <!-- REGISTER FORM -->
     <div class="client-login-form" id="clientRegisterForm" style="display:none">
@@ -535,7 +539,7 @@ const SUPABASE_READY = !!_supabase;
       <input type="text" id="regSurname" placeholder="Sobrenome *">
       <input type="text" id="regWhatsapp" placeholder="WhatsApp * (00) 00000-0000">
       <input type="email" id="regEmail" placeholder="E-mail *">
-      <input type="password" id="regPass" placeholder="Senha * (mín. 4 dígitos)">
+      <input type="password" id="regPass" placeholder="Senha * (mín. 6 caracteres)">
       <input type="password" id="regPass2" placeholder="Confirmar senha *">
       <button onclick="doClientRegister()">Criar Conta</button>
     </div>
@@ -644,7 +648,7 @@ const SUPABASE_READY = !!_supabase;
   <div class="login-box">
     <h3>🔐 Área Administrativa</h3>
     <div class="login-error" id="loginError">Usuário ou senha incorretos</div>
-    <input type="text" id="loginUser" placeholder="Usuário" onkeydown="if(event.key==='Enter')doLogin()">
+    <input type="text" id="loginUser" placeholder="E-mail" onkeydown="if(event.key==='Enter')doLogin()">
     <input type="password" id="loginPass" placeholder="Senha" onkeydown="if(event.key==='Enter')doLogin()">
     <button onclick="doLogin()">Entrar</button>
   </div>
@@ -906,9 +910,12 @@ const defaultSettings = {
   darkMode: false
 };
 
+// ATENCAO: o login administrativo real agora e feito pelo Supabase Auth (servidor).
+// O fallback abaixo so e usado se o Supabase estiver completamente indisponivel.
+// Troque por algo forte e NAO reutilize a senha antiga.
 const defaultCredentials = {
-  username: '152946',
-  password: '152946'
+  username: 'admin_local',
+  password: 'troque-esta-senha-local'
 };
 
 const defaultMessageTemplate = `Pedido nº {numero}
@@ -958,11 +965,22 @@ function saveFavorites() {
 }
 
 // Load cart/favorites from Supabase when user logs in (merge with local)
-function loadUserCartFavorites() {
+// Load cart/favorites from Supabase when user logs in (merge with local)
+async function loadUserCartFavorites() {
   if (!currentClient) return;
   const cid = currentClient.id;
-  // Load cloud cart
-  const cloudCart = DB.get('cart_' + cid, []);
+  // Busca o carrinho na nuvem direto do servidor (chave cart_<uid>)
+  let cloudCart = [];
+  let cloudFav = [];
+  if (ADMIN_AUTH_MODE) {
+    try {
+      const { data: rows } = await _supabase.from('catalog_data').select('key,value').or('key.eq.cart_' + cid + ',key.eq.favorites_' + cid);
+      (rows || []).forEach(r => {
+        if (r.key === 'cart_' + cid) cloudCart = r.value || [];
+        if (r.key === 'favorites_' + cid) cloudFav = r.value || [];
+      });
+    } catch (e) { console.error('load cloud cart error', e); }
+  }
   if (cart.length > 0 && cloudCart.length > 0) {
     // Merge local cart into cloud cart
     cart.forEach(item => {
@@ -976,11 +994,10 @@ function loadUserCartFavorites() {
   }
   // Save merged to cloud
   DB.set('cart_' + cid, cart);
-  // Clear local cart since it's now in cloud
+  // Clear local cart since it is now in cloud
   try { localStorage.removeItem('cat_cart'); } catch(e) {}
 
   // Load cloud favorites
-  const cloudFav = DB.get('favorites_' + cid, []);
   favorites.forEach(id => { if (!cloudFav.includes(id)) cloudFav.push(id); });
   favorites = cloudFav;
   DB.set('favorites_' + cid, favorites);
@@ -994,6 +1011,7 @@ function loadUserCartFavorites() {
 // ============ INIT ============
 async function init() {
   await DB.init();
+  await checkAdminSession();
   
   // Load all data from DB cache (now populated from Supabase)
   settings = DB.get('settings', defaultSettings);
@@ -1006,7 +1024,6 @@ async function init() {
   coupons = DB.get('coupons', []);
   cart = DB.get('cart', []);
   favorites = DB.get('favorites', []);
-  clients = DB.get('clients', []);
   orderCounter = DB.get('orderCounter', 0);
 
   applySettings();
@@ -1020,8 +1037,8 @@ async function init() {
   document.getElementById('footerYear').textContent = new Date().getFullYear();
   startBannerCarousel();
   startSessionCheck();
-  restoreClientSession();
-  loadUserCartFavorites();
+  await restoreClientSession();
+  await handleRecoveryLink();
   
   // Fade in
   document.body.style.opacity = '1';
@@ -1481,16 +1498,11 @@ function submitOrder(method) {
     }
   }
 
-  // Link to existing client if logged in or matching email/whatsapp
+  // Vincula ao cliente logado (pedidos de visitantes ficam sem vínculo,
+  // mas continuam visíveis para o cliente através do e-mail)
   let clientId = null;
   if (currentClient) {
     clientId = currentClient.id;
-  } else {
-    const existingClient = clients.find(c => 
-      (c.email && c.email.toLowerCase() === email.toLowerCase()) ||
-      (c.whatsapp && c.whatsapp.replace(/\D/g,'') === whatsapp.replace(/\D/g,''))
-    );
-    if (existingClient) clientId = existingClient.id;
   }
 
   orderCounter++;
@@ -1518,7 +1530,13 @@ function submitOrder(method) {
   };
   
   orders.push(order);
-  DB.set('orders', orders);
+  if (ADMIN_AUTH_MODE) {
+    // Salva o pedido como linha própria na tabela protegida (orders)
+    _supabase.from('orders').insert({ id: order.id, client_id: clientId, data: order })
+      .then(({ error }) => { if (error) { console.error('order save error', error); toast('Aviso: pedido n\u00e3o foi salvo no servidor (' + (error.message || 'erro') + ')', 'error'); } });
+  } else {
+    DB.set('orders', orders);
+  }
   
   const message = generateOrderMessage(orderNum, name, surname, cart, total, whatsapp, email);
   
@@ -1896,7 +1914,7 @@ function toggleFavDetail(id) {
 }
 
 // ============ CLIENT ACCOUNTS ============
-let clients = DB.get('clients', []);
+let clients = []; // perfis de clientes (buscados do servidor, tabela profiles)
 let currentClient = null;
 
 function switchClientTab(tab) {
@@ -1925,37 +1943,90 @@ function closeClientLogin() {
   document.getElementById('clientLoginModal').classList.remove('open');
 }
 
-function doClientLogin() {
-  const user = document.getElementById('clientLoginUser').value.trim().toLowerCase();
+async function doClientLogin() {
+  const user = document.getElementById('clientLoginUser').value.trim();
   const pass = document.getElementById('clientLoginPass').value;
   if (!user || !pass) { showClientLoginError('Preencha todos os campos'); return; }
-  
-  const client = clients.find(c => 
-    (c.email && c.email.toLowerCase() === user) || 
-    (c.whatsapp && c.whatsapp.replace(/\D/g,'') === user.replace(/\D/g,''))
-  );
-  
-  if (!client || client.password !== pass) {
-    showClientLoginError('E-mail/WhatsApp ou senha incorretos');
-    return;
-  }
-  
-  currentClient = client;
-  DB.set('currentClient', { id: client.id });
-  closeClientLogin();
-  updateClientMenuBtn();
-  loadUserCartFavorites();
-  if (_pendingCheckout) {
-    _pendingCheckout = false;
-    openCheckout();
-    toast('Login realizado! Finalize seu pedido. 🛒', 'success');
-  } else {
-    openClientAccount();
-    toast('Bem-vindo, ' + client.name + '! 👋', 'success');
+
+  if (!ADMIN_AUTH_MODE) { showClientLoginError('Servidor de login indisponível (Supabase fora do ar)'); return; }
+
+  try {
+    const { data, error } = await _supabase.auth.signInWithPassword({ email: user, password: pass });
+    if (error || !data.session) {
+      showClientLoginError('E-mail ou senha incorretos');
+      return;
+    }
+    const { data: profile } = await _supabase.from('profiles').select('name,surname,whatsapp,email,created_date').eq('id', data.session.user.id).maybeSingle();
+    if (!profile) {
+      await _supabase.auth.signOut();
+      showClientLoginError('Esta conta não tem perfil de cliente.');
+      return;
+    }
+    await applyClientSession(data.session.user.id, profile);
+    syncMyOrders();
+    closeClientLogin();
+    if (_pendingCheckout) {
+      _pendingCheckout = false;
+      openCheckout();
+      toast('Login realizado! Finalize seu pedido. 🛍️', 'success');
+    } else {
+      openClientAccount();
+      toast('Bem-vindo, ' + profile.name + '! 👋', 'success');
+    }
+  } catch (err) {
+    console.error('client login error', err);
+    showClientLoginError('Erro ao entrar. Tente novamente.');
   }
 }
 
-function doClientRegister() {
+async function applyClientSession(uid, profile) {
+  currentClient = { id: uid, name: profile.name, surname: profile.surname, whatsapp: profile.whatsapp, email: profile.email, createdDate: profile.created_date };
+  DB.set('currentClient', { id: uid });
+  updateClientMenuBtn();
+  await loadUserCartFavorites();
+}
+
+async function syncMyOrders() {
+  if (!ADMIN_AUTH_MODE || !currentClient) return;
+  try {
+    const { data: rows, error } = await _supabase.from('orders').select('client_id,data');
+    if (error) throw error;
+    (rows || []).forEach(r => {
+      const o = r.data; if (!o) return;
+      if (!orders.find(x => x.id === o.id)) orders.push(o);
+    });
+  } catch (err) { console.error('syncMyOrders error', err); }
+}
+
+async function clientForgotPassword() {
+  const email = prompt('Digite o e-mail da sua conta para recuperar a senha:');
+  if (!email) return;
+  if (!ADMIN_AUTH_MODE) { toast('Servidor indisponível', 'error'); return; }
+  try {
+    const { error } = await _supabase.auth.resetPasswordForEmail(email.trim());
+    if (error) { showClientLoginError(error.message || 'Erro ao enviar o e-mail'); return; }
+    showClientLoginError('Verifique seu e-mail (inclusive o spam) e clique no link recebido.');
+  } catch (e) { showClientLoginError('Erro ao enviar o e-mail'); }
+}
+
+async function handleRecoveryLink() {
+  if (!ADMIN_AUTH_MODE) return;
+  try {
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    if (params.get('type') !== 'recovery') return;
+    const { data } = await _supabase.auth.getSession();
+    if (!data || !data.session) return;
+    const newPass = prompt('Defina sua nova senha (mínimo 6 caracteres):');
+    if (!newPass) return;
+    if (newPass.length < 6) { alert('A senha deve ter no mínimo 6 caracteres.'); return; }
+    const { error } = await _supabase.auth.updateUser({ password: newPass });
+    if (error) { alert('Erro: ' + (error.message || 'tente novamente')); return; }
+    window.location.hash = '';
+    alert('Senha alterada com sucesso! Você já pode entrar com a nova senha.');
+  } catch (e) { console.error('recovery error', e); }
+}
+
+async function doClientRegister() {
   const name = document.getElementById('regName').value.trim();
   const surname = document.getElementById('regSurname').value.trim();
   const whatsapp = document.getElementById('regWhatsapp').value.trim();
@@ -1967,43 +2038,48 @@ function doClientRegister() {
     showClientLoginError('Preencha todos os campos obrigatórios');
     return;
   }
-  if (pass.length < 4) {
-    showClientLoginError('Senha deve ter no mínimo 4 dígitos');
+  if (pass.length < 6) {
+    showClientLoginError('Senha deve ter no mínimo 6 caracteres');
     return;
   }
   if (pass !== pass2) {
     showClientLoginError('As senhas não coincidem');
     return;
   }
-  if (clients.find(c => c.email && c.email.toLowerCase() === email.toLowerCase())) {
-    showClientLoginError('Já existe uma conta com este e-mail');
-    return;
-  }
-  
-  const client = {
-    id: Date.now(),
-    name, surname, whatsapp, email, password: pass,
-    createdDate: new Date().toISOString().split('T')[0]
-  };
-  clients.push(client);
-  DB.set('clients', clients);
-  
-  currentClient = client;
-  DB.set('currentClient', { id: client.id });
-  closeClientLogin();
-  updateClientMenuBtn();
-  loadUserCartFavorites();
-  
-  // Clear form
-  ['regName','regSurname','regWhatsapp','regEmail','regPass','regPass2'].forEach(id => document.getElementById(id).value = '');
-  
-  if (_pendingCheckout) {
-    _pendingCheckout = false;
-    openCheckout();
-    toast('Conta criada! Finalize seu pedido. 🛒', 'success');
-  } else {
-    openClientAccount();
-    toast('Conta criada com sucesso! 🎉', 'success');
+  if (!ADMIN_AUTH_MODE) { showClientLoginError('Servidor de login indisponível (Supabase fora do ar)'); return; }
+
+  try {
+    // Cria a conta no servidor (Supabase Auth) - a senha nunca passa pelo HTML
+    const { data, error } = await _supabase.auth.signUp({ email: email, password: pass });
+    if (error) {
+      showClientLoginError(error.message.includes('already') ? 'Já existe uma conta com este e-mail' : (error.message || 'Erro ao criar conta'));
+      return;
+    }
+    if (!data.user) { showClientLoginError('Erro ao criar conta.'); return; }
+    if (!data.session) {
+      showClientLoginError('Conta criada! Confirme pelo e-mail que o Supabase enviou e depois faça login.');
+      return;
+    }
+    // Salva o perfil (nome, whatsapp...) em tabela protegida no servidor
+    const { error: profErr } = await _supabase.from('profiles').insert({ id: data.user.id, name, surname, whatsapp, email });
+    if (profErr) { console.error('profile insert error', profErr); }
+
+    await applyClientSession(data.user.id, { name, surname, whatsapp, email, created_date: new Date().toISOString().split('T')[0] });
+    closeClientLogin();
+    
+    ['regName','regSurname','regWhatsapp','regEmail','regPass','regPass2'].forEach(id => document.getElementById(id).value = '');
+    
+    if (_pendingCheckout) {
+      _pendingCheckout = false;
+      openCheckout();
+      toast('Conta criada! Finalize seu pedido. 🛍️', 'success');
+    } else {
+      openClientAccount();
+      toast('Conta criada com sucesso! 🎉', 'success');
+    }
+  } catch (err) {
+    console.error('register error', err);
+    showClientLoginError('Erro ao criar conta. Tente novamente.');
   }
 }
 
@@ -2127,16 +2203,18 @@ function clientCancelOrder(id) {
   const order = orders.find(o => o.id === id);
   if (order) {
     order.status = 'cancelled-by-client';
-    DB.set('orders', orders);
+    if (ADMIN_AUTH_MODE) _supabase.from('orders').update({ data: order }).eq('id', id).then(r => { if (r.error) console.error('cancel error', r.error); });
+    else DB.set('orders', orders);
     renderClientOrders();
     toast('Pedido cancelado', 'info');
   }
 }
 
-function clientLogout() {
+async function clientLogout() {
   // Save current cart/favorites to local before clearing session
   try { localStorage.setItem('cat_cart', JSON.stringify(cart)); } catch(e) {}
   try { localStorage.setItem('cat_favorites', JSON.stringify(favorites)); } catch(e) {}
+  if (ADMIN_AUTH_MODE) { try { await _supabase.auth.signOut(); } catch(e) {} }
   currentClient = null;
   DB.remove('currentClient');
   closeClientAccount();
@@ -2145,75 +2223,140 @@ function clientLogout() {
 }
 
 // Restore client session on load
-function restoreClientSession() {
-  const saved = DB.get('currentClient', null);
-  if (saved && saved.id) {
-    const client = clients.find(c => c.id === saved.id);
-    if (client) {
-      currentClient = client;
-      updateClientMenuBtn();
-    }
-  }
+// Restaura a sessao do cliente a partir do servidor (token salvo pelo Supabase Auth)
+async function restoreClientSession() {
+  if (!ADMIN_AUTH_MODE) return;
+  try {
+    const { data } = await _supabase.auth.getSession();
+    if (!data || !data.session) return;
+    const { data: profile } = await _supabase.from('profiles').select('name,surname,whatsapp,email,created_date').eq('id', data.session.user.id).maybeSingle();
+    if (!profile) return; // conta administrativa (sem perfil de cliente)
+    currentClient = { id: data.session.user.id, name: profile.name, surname: profile.surname, whatsapp: profile.whatsapp, email: profile.email, createdDate: profile.created_date };
+    DB.set('currentClient', { id: currentClient.id });
+    updateClientMenuBtn();
+    await syncMyOrders();
+    await loadUserCartFavorites();
+  } catch (e) { console.error('restoreClientSession error', e); }
 }
 
 // ---- ADMIN: CLIENTS TAB ----
+let _adminClientsSyncing = false;
+let oldClientsPending = null; // quantos clientes antigos (sistema anterior) ainda existem no banco
+
+async function syncClientsFromServer() {
+  if (!ADMIN_AUTH_MODE || _adminClientsSyncing) return;
+  _adminClientsSyncing = true;
+  try {
+    const { data, error } = await _supabase.from('profiles').select('id,name,surname,whatsapp,email,created_date');
+    if (!error && data) clients = data.map(p => ({ id: p.id, name: p.name, surname: p.surname, whatsapp: p.whatsapp, email: p.email, createdDate: p.created_date }));
+    else if (error) console.error('clients sync error', error);
+  } finally { _adminClientsSyncing = false; }
+}
+
+// Quantos clientes antigos (do sistema anterior) ainda existem para migrar
+async function countOldClients() {
+  if (!ADMIN_AUTH_MODE) return 0;
+  try {
+    const { data } = await _supabase.from('catalog_data').select('value').eq('key', 'clients');
+    const val = data && data[0] && data[0].value;
+    return Array.isArray(val) ? val.length : 0;
+  } catch (e) { return 0; }
+}
+
+async function migrateOldClients() {
+  if (!confirm('Migrar os clientes antigos para o novo login seguro?\n\nCada cliente mantém e-mail e senha atuais e passa a entrar com e-mail + senha no servidor.\n\nATENÇÃO: antes de continuar, desligue a confirmação de e-mail no painel do Supabase (Authentication > Sign In / Up > desative \'Confirm email\') e ligue de novo depois.')) return;
+  toast('Migrando clientes...', 'info');
+  try {
+    const { data } = await _supabase.from('catalog_data').select('value').eq('key', 'clients');
+    const oldClients = (data && data[0] && data[0].value) || [];
+    if (!oldClients.length) { toast('Não há clientes antigos para migrar.', 'info'); return; }
+
+    // Cliente Supabase separado só para criar as contas (não afeta sua sessão de admin)
+    const sb2 = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
+    const map = {};
+    let ok = 0, skip = 0, fail = 0;
+    for (const oc of oldClients) {
+      if (!oc.email) { fail++; continue; }
+      try {
+        const res = await sb2.auth.signUp({ email: oc.email, password: oc.password || 'senha123' });
+        if (res.error) {
+          if (res.error.message && res.error.message.toLowerCase().includes('already')) { skip++; }
+          else if (res.error.message && res.error.message.toLowerCase().includes('at least 6')) { fail++; }
+          else { fail++; }
+          continue;
+        }
+        if (res.data && res.data.user && res.data.session) {
+          await sb2.from('profiles').upsert({ id: res.data.user.id, name: oc.name, surname: oc.surname, whatsapp: oc.whatsapp, email: oc.email });
+          map[oc.id] = res.data.user.id;
+          ok++;
+        } else if (res.data && res.data.user) {
+          fail++; // conta criada mas sem confirmacao de e-mail ativa
+        }
+        try { await sb2.auth.signOut(); } catch(e) {}
+      } catch (e) { fail++; }
+    }
+
+    // Migra também os pedidos antigos, vinculando aos novos IDs
+    let ordOk = 0;
+    try {
+      const { data: ordRows } = await _supabase.from('catalog_data').select('value').eq('key', 'orders');
+      const oldOrders = (ordRows && ordRows[0] && ordRows[0].value) || [];
+      for (const o of oldOrders) {
+        const cid = map[o.clientId] || null;
+        const { error: insErr } = await _supabase.from('orders').upsert({ id: o.id, client_id: cid, data: o });
+        if (!insErr) ordOk++;
+      }
+    } catch (e) { console.error('orders migration error', e); }
+
+    // Apaga as listas antigas (senhas em texto puro) do banco
+    const delKeys = ['clients'];
+    if (ordOk > 0) delKeys.push('orders');
+    await _supabase.from('catalog_data').delete().in('key', delKeys);
+
+    toast('Migração concluída! ' + ok + ' cliente(s) migrado(s), ' + skip + ' já existiam, ' + fail + ' falharam (peça para refazerem o cadastro). ' + ordOk + ' pedido(s) migado(s).', 'success');
+    await syncClientsFromServer();
+    await refreshAdminTab();
+  } catch (err) {
+    console.error('migration error', err);
+    toast('Erro na migração. Verifique sua conexão com o Supabase.', 'error');
+  }
+}
+
 function renderAdminClients() {
+  const rows = clients.map(cl => {
+    const clientOrders = orders.filter(o => o.clientId === cl.id ||
+      (o.email && o.email.toLowerCase() === (cl.email || '').toLowerCase()) ||
+      (o.whatsapp && o.whatsapp.replace(/\D/g,'') === (cl.whatsapp || '').replace(/\D/g,'')));
+    return `
+      <div class="client-admin-row">
+        <div class="avatar">${(cl.name || '?').charAt(0).toUpperCase()}</div>
+        <div class="info">
+          <strong>${cl.name} ${cl.surname}</strong>
+          <span>📱 ${cl.whatsapp || '-'} · ✉️ ${cl.email} · ${clientOrders.length} pedido(s) · Desde ${cl.createdDate || '-'}</span>
+          <span style="display:block;margin-top:4px;font-size:12px;color:var(--text-muted)">🔑 Senha protegida (armazenada apenas no servidor, criptografada)</span>
+        </div>
+        <div class="actions" style="display:flex;gap:6px">
+          <button class="btn btn-secondary btn-sm" onclick="editClient('${cl.id}')">✏️ Editar</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteClient('${cl.id}')">🗑️</button>
+        </div>
+      </div>
+    `;
+  }).join('');
   return `
     <div class="admin-toolbar">
       <span style="font-size:14px;font-weight:600">${clients.length} cliente(s) cadastrado(s)</span>
+      <button class="btn btn-secondary btn-sm" onclick="refreshClientsTab()">🔄 Atualizar</button>
+      <button class="btn btn-warning btn-sm" id="migrateOldBtn" style="display:${(oldClientsPending === null || oldClientsPending > 0) ? '' : 'none'}" onclick="migrateOldClients()">🔐 Migrar clientes antigos${oldClientsPending !== null ? ' (' + oldClientsPending + ')' : ''}</button>
     </div>
-    ${clients.length === 0 ? '<p style="color:var(--text-muted);padding:20px">Nenhum cliente cadastrado ainda.</p>' :
-    clients.map(c => {
-      const clientOrders = orders.filter(o => o.clientId === c.id || 
-        (o.email && o.email.toLowerCase() === c.email.toLowerCase()) ||
-        (o.whatsapp && o.whatsapp.replace(/\D/g,'') === c.whatsapp.replace(/\D/g,'')));
-      return `
-        <div class="client-admin-row">
-          <div class="avatar">${c.name.charAt(0).toUpperCase()}</div>
-          <div class="info">
-            <strong>${c.name} ${c.surname}</strong>
-            <span>📱 ${c.whatsapp} · ✉️ ${c.email} · ${clientOrders.length} pedido(s) · Desde ${c.createdDate}</span>
-            <span style="display:block;margin-top:4px;font-size:13px">🔑 Senha: <span id="pass_${c.id}" style="font-family:monospace;letter-spacing:2px">••••</span> <button class="btn btn-sm" style="padding:2px 8px;font-size:12px;background:var(--bg-muted)" onclick="togglePassView(${c.id})">👁️ Ver</button> <button class="btn btn-sm" style="padding:2px 8px;font-size:12px;background:var(--warning);color:#333" onclick="changeClientPass(${c.id})">✏️ Alterar Senha</button></span>
-          </div>
-          <div class="actions" style="display:flex;gap:6px">
-            <button class="btn btn-secondary btn-sm" onclick="editClient(${c.id})">✏️ Editar</button>
-            <button class="btn btn-danger btn-sm" onclick="deleteClient(${c.id})">🗑️</button>
-          </div>
-        </div>
-      `;
-    }).join('')}
-  `;
+    ${clients.length === 0 ? '<p style="color:var(--text-muted);padding:20px">Nenhum cliente cadastrado ainda.</p>' : rows}`;
 }
 
-function togglePassView(id) {
-  const client = clients.find(c => c.id === id);
-  if (!client) return;
-  const el = document.getElementById('pass_' + id);
-  if (el.textContent === '••••') {
-    el.textContent = client.password || '(sem senha)';
-    el.style.letterSpacing = '0';
-  } else {
-    el.textContent = '••••';
-    el.style.letterSpacing = '2px';
-  }
+async function refreshClientsTab() {
+  await syncClientsFromServer();
+  await refreshAdminTab();
 }
 
-function changeClientPass(id) {
-  const client = clients.find(c => c.id === id);
-  if (!client) return;
-  const newPass = prompt('Nova senha para ' + client.name + ' ' + client.surname + ':', '');
-  if (newPass === null) return;
-  if (newPass.length < 4) {
-    toast('Senha deve ter no mínimo 4 dígitos', 'error');
-    return;
-  }
-  client.password = newPass;
-  DB.set('clients', clients);
-  toast('Senha alterada com sucesso!', 'success');
-  switchAdminTab('clients', document.querySelectorAll('.admin-tab')[9]);
-}
-
-function editClient(id) {
+async function editClient(id) {
   const client = clients.find(c => c.id === id);
   if (!client) return;
   const newName = prompt('Nome:', client.name);
@@ -2224,24 +2367,25 @@ function editClient(id) {
   if (newWhatsapp === null) return;
   const newEmail = prompt('E-mail:', client.email);
   if (newEmail === null) return;
-  const newPass = prompt('Nova senha (deixe vazio para manter):', '');
-  
-  client.name = newName.trim() || client.name;
-  client.surname = newSurname.trim() || client.surname;
-  client.whatsapp = newWhatsapp.trim() || client.whatsapp;
-  client.email = newEmail.trim() || client.email;
-  if (newPass) client.password = newPass;
-  
-  DB.set('clients', clients);
-  switchAdminTab('clients', document.querySelectorAll('.admin-tab')[9]);
+
+  const updates = { name: newName.trim() || client.name, surname: newSurname.trim() || client.surname, whatsapp: newWhatsapp.trim() || client.whatsapp, email: newEmail.trim() || client.email };
+  if (ADMIN_AUTH_MODE) {
+    const { error } = await _supabase.from('profiles').update(updates).eq('id', id);
+    if (error) { toast('Erro ao atualizar cliente: ' + (error.message || ''), 'error'); return; }
+  }
+  Object.assign(client, updates);
+  await refreshClientsTab();
   toast('Cliente atualizado!', 'success');
 }
 
-function deleteClient(id) {
-  if (!confirm('Excluir este cliente? Os pedidos não serão removidos.')) return;
+async function deleteClient(id) {
+  if (!confirm('Excluir este cliente? Os pedidos não serão removidos.\n\nObs: a conta de login ficará inativa, pois o perfil será removido.')) return;
+  if (ADMIN_AUTH_MODE) {
+    const { error } = await _supabase.from('profiles').delete().eq('id', id);
+    if (error) { toast('Erro ao excluir cliente.', 'error'); return; }
+  }
   clients = clients.filter(c => c.id !== id);
-  DB.set('clients', clients);
-  switchAdminTab('clients', document.querySelectorAll('.admin-tab')[9]);
+  await refreshClientsTab();
   toast('Cliente excluído!', 'info');
 }
 
@@ -2255,10 +2399,8 @@ async function reloadFromSupabase() {
   messageTemplate = DB.get('messageTemplate', defaultMessageTemplate);
   products = DB.get('products', []);
   categories = DB.get('categories', ['Geral']);
-  orders = DB.get('orders', []);
   banners = DB.get('banners', []);
   coupons = DB.get('coupons', []);
-  clients = DB.get('clients', []);
   orderCounter = DB.get('orderCounter', 0);
   // Re-render everything
   applySettings();
@@ -2279,6 +2421,9 @@ async function reloadFromSupabase() {
     updateFavBadge();
     renderProducts();
   }
+  await syncOrdersFromServer();
+  await syncClientsFromServer();
+  oldClientsPending = await countOldClients();
   toast('Dados sincronizados! ✓', 'success');
 }
 
@@ -2321,6 +2466,7 @@ function toast(msg, type = 'info') {
 
 // ============ ADMIN LOGIN ============
 let adminLoggedIn = false;
+let adminUserEmail = '';
 let sessionTimer = null;
 const SESSION_TIMEOUT = 15 * 60 * 1000; // 15 minutes
 
@@ -2335,25 +2481,82 @@ function closeLogin() {
   document.getElementById('loginModal').classList.remove('open');
 }
 
-function doLogin() {
+async function doLogin() {
   const user = document.getElementById('loginUser').value.trim();
   const pass = document.getElementById('loginPass').value.trim();
-  if (user === credentials.username && pass === credentials.password) {
-    adminLoggedIn = true;
-    closeLogin();
-    openAdmin();
-    resetSessionTimer();
-    toast('Bem-vindo ao painel administrativo!', 'success');
+  if (!user || !pass) { document.getElementById('loginError').style.display = 'block'; return; }
+
+  if (ADMIN_AUTH_MODE) {
+    // Login real: verificado pelo servidor do Supabase (nada fica no HTML)
+    const loginBtn = document.querySelector('#loginModal button');
+    if (loginBtn) loginBtn.disabled = true;
+    try {
+      const { data, error } = await _supabase.auth.signInWithPassword({ email: user, password: pass });
+      if (error || !data.session) {
+        document.getElementById('loginError').style.display = 'block';
+        return;
+      }
+      // Confirma no servidor que esta conta e administrativa
+      // (um cliente que tentar entrar no painel sera recusado)
+      const { data: adminRows, error: adminErr } = await _supabase.from('admins').select('email').limit(1);
+      if (adminErr || !adminRows || adminRows.length === 0) {
+        await _supabase.auth.signOut();
+        document.getElementById('loginError').style.display = 'block';
+        toast('Esta conta não tem acesso administrativo.', 'error');
+        return;
+      }
+      adminLoggedIn = true;
+      adminUserEmail = user;
+      closeLogin();
+      openAdmin();
+      resetSessionTimer();
+      toast('Bem-vindo ao painel administrativo!', 'success');
+    } catch (err) {
+      console.error('Auth login error:', err);
+      document.getElementById('loginError').style.display = 'block';
+    } finally {
+      if (loginBtn) loginBtn.disabled = false;
+    }
   } else {
-    document.getElementById('loginError').style.display = 'block';
+    // Modo antigo (fallback, só se o Supabase Auth estiver indisponível)
+    if (user === credentials.username && pass === credentials.password) {
+      adminLoggedIn = true;
+      closeLogin();
+      openAdmin();
+      resetSessionTimer();
+      toast('Bem-vindo ao painel administrativo!', 'success');
+    } else {
+      document.getElementById('loginError').style.display = 'block';
+    }
   }
+}
+
+// Restaura sessão admin salva (se você ficar com a aba aberta)
+async function checkAdminSession() {
+  if (!ADMIN_AUTH_MODE || adminLoggedIn) return;
+  try {
+    const { data } = await _supabase.auth.getSession();
+    if (data && data.session) {
+      const { data: userData } = await _supabase.auth.getUser();
+      adminLoggedIn = true;
+      adminUserEmail = userData?.user?.email || '';
+    }
+  } catch (e) { /* ignora */ }
+}
+
+async function adminSignOut() {
+  if (ADMIN_AUTH_MODE) {
+    try { await _supabase.auth.signOut(); } catch (e) { /* ignora */ }
+  }
+  adminLoggedIn = false;
+  adminUserEmail = '';
 }
 
 function resetSessionTimer() {
   if (sessionTimer) clearTimeout(sessionTimer);
-  sessionTimer = setTimeout(() => {
+  sessionTimer = setTimeout(async () => {
     if (adminLoggedIn) {
-      adminLoggedIn = false;
+      await adminSignOut();
       closeAdmin();
       toast('Sessão expirada por inatividade. Faça login novamente.', 'info');
     }
@@ -2366,11 +2569,35 @@ function startSessionCheck() {
 }
 
 // ============ ADMIN PANEL ============
+let currentAdminTab = 'dashboard';
+
+async function syncOrdersFromServer() {
+  if (!ADMIN_AUTH_MODE) return;
+  try {
+    const { data, error } = await _supabase.from('orders').select('data');
+    if (!error && data) orders = data.map(r => r.data).filter(Boolean);
+    else if (error) console.error('orders sync error', error);
+  } catch (e) { console.error('orders sync error', e); }
+}
+
+async function refreshAdminData() {
+  if (!adminLoggedIn) return;
+  await Promise.all([syncOrdersFromServer(), syncClientsFromServer()]);
+  try { oldClientsPending = await countOldClients(); } catch(e) {}
+}
+
+async function refreshAdminTab() {
+  const el = document.querySelector('.admin-tab.active');
+  if (el) switchAdminTab(currentAdminTab, el);
+}
+
 function openAdmin() {
   if (!adminLoggedIn) { openLogin(); return; }
   document.getElementById('adminOverlay').classList.add('open');
-  document.getElementById('adminSessionInfo').textContent = `Sessão: ${credentials.username}`;
+  document.getElementById('adminSessionInfo').textContent = `Sessão: ${adminUserEmail || credentials.username}`;
   switchAdminTab('dashboard', document.querySelector('.admin-tab'));
+  // Busca os dados frescos do servidor (pedidos e clientes) e re-renderiza
+  refreshAdminData().then(() => refreshAdminTab());
 }
 
 function closeAdmin() {
@@ -2378,6 +2605,7 @@ function closeAdmin() {
 }
 
 function switchAdminTab(tab, el) {
+  currentAdminTab = tab;
   document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
   if (el) el.classList.add('active');
   document.querySelectorAll('.admin-section').forEach(s => s.classList.remove('active'));
@@ -2693,6 +2921,7 @@ function renderAdminOrders() {
       </select>
       <input type="date" id="orderDateFilter" onchange="filterOrders()">
       <button class="btn btn-danger btn-sm" onclick="clearPendingOrders()">🗑️ Limpar Pendentes</button>
+      <button class="btn btn-secondary btn-sm" onclick="refreshOrdersTab()">🔄 Atualizar</button>
     </div>
     <div id="ordersTableContainer">
       <table class="admin-orders-table">
@@ -2761,11 +2990,18 @@ function setTransitStatus(id) {
     order.status = 'transit';
     order.tracking = tracking || undefined;
     order.trackingCode = trackingCode || undefined;
-    DB.set('orders', orders);
+    if (ADMIN_AUTH_MODE) _supabase.from('orders').update({ data: order }).eq('id', id).then(r => { if (r.error) console.error('order update error', r.error); });
+    else DB.set('orders', orders);
     document.getElementById('transitOverlay').remove();
     filterOrders();
     toast('Pedido marcado como Em Trânsito!' + (trackingCode ? ' Código: ' + trackingCode : ''), 'success');
   }
+}
+
+async function refreshOrdersTab() {
+  await syncOrdersFromServer();
+  const el = document.querySelector('.admin-tab.active');
+  if (el) switchAdminTab(currentAdminTab, el);
 }
 
 function filterOrders() {
@@ -2781,21 +3017,31 @@ function filterOrders() {
 
 function setOrderStatus(id, status) {
   const order = orders.find(o => o.id === id);
-  if (order) { order.status = status; DB.set('orders', orders); filterOrders(); toast('Status atualizado!', 'success'); }
+  if (order) {
+    order.status = status;
+    if (ADMIN_AUTH_MODE) _supabase.from('orders').update({ data: order }).eq('id', id).then(r => { if (r.error) console.error('order update error', r.error); });
+    else DB.set('orders', orders);
+    filterOrders();
+    toast('Status atualizado!', 'success');
+  }
 }
 
-function deleteOrder(id) {
+async function deleteOrder(id) {
   if (!confirm('Excluir este pedido?')) return;
   orders = orders.filter(o => o.id !== id);
-  DB.set('orders', orders);
+  if (ADMIN_AUTH_MODE) await _supabase.from('orders').delete().eq('id', id);
+  else DB.set('orders', orders);
   filterOrders();
   toast('Pedido excluído!', 'info');
 }
 
-function clearPendingOrders() {
+async function clearPendingOrders() {
   if (!confirm('Excluir TODOS os pedidos pendentes?')) return;
+  const pend = orders.filter(o => o.status === 'pending');
   orders = orders.filter(o => o.status !== 'pending');
-  DB.set('orders', orders);
+  if (ADMIN_AUTH_MODE) {
+    for (const o of pend) { await _supabase.from('orders').delete().eq('id', o.id); }
+  } else DB.set('orders', orders);
   filterOrders();
   toast('Pedidos pendentes excluídos!', 'info');
 }
@@ -3063,6 +3309,16 @@ function saveSettings() {
 
 // ---- SECURITY ----
 function renderAdminSecurity() {
+  if (ADMIN_AUTH_MODE) {
+    return `
+    <div class="settings-group">
+      <h4>🔐 Conta Administrativa</h4>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:10px">Login: <strong>${adminUserEmail}</strong> (gerenciado pelo Supabase Auth, com verificação no servidor)</p>
+      <div class="form-group"><label>Nova Senha</label><input type="password" id="secNewPass" placeholder="Deixe em branco para manter"></div>
+      <div class="form-group"><label>Confirmar Nova Senha</label><input type="password" id="secConfirmPass" placeholder="Confirme a nova senha"></div>
+      <button class="btn btn-primary" onclick="saveCredentials()">💾 Salvar Nova Senha</button>
+    </div>`;
+  }
   return `
     <div class="settings-group">
       <h4>🔐 Alterar Credenciais</h4>
@@ -3081,12 +3337,27 @@ function renderAdminSecurity() {
     </div>`;
 }
 
-function saveCredentials() {
-  const user = document.getElementById('secUser').value.trim();
+async function saveCredentials() {
   const newPass = document.getElementById('secNewPass').value;
   const confirmPass = document.getElementById('secConfirmPass').value;
-  if (!user) { toast('Usuário não pode ser vazio!', 'error'); return; }
   if (newPass && newPass !== confirmPass) { toast('As senhas não coincidem!', 'error'); return; }
+
+  if (ADMIN_AUTH_MODE) {
+    if (!newPass) { toast('Digite a nova senha!', 'error'); return; }
+    try {
+      const { error } = await _supabase.auth.updateUser({ password: newPass });
+      if (error) { toast('Erro ao atualizar senha: ' + (error.message || 'tente novamente'), 'error'); return; }
+      document.getElementById('secNewPass').value = '';
+      document.getElementById('secConfirmPass').value = '';
+      toast('Senha atualizada com sucesso!', 'success');
+    } catch (err) {
+      toast('Erro ao atualizar senha.', 'error');
+    }
+    return;
+  }
+
+  const user = (document.getElementById('secUser') || {}).value?.trim() || credentials.username;
+  if (!user) { toast('Usuário não pode ser vazio!', 'error'); return; }
   credentials.username = user;
   if (newPass) credentials.password = newPass;
   DB.set('credentials', credentials);
@@ -3254,7 +3525,16 @@ function applyImportData(data, mode) {
     if (data.categories) { categories = data.categories; DB.set("categories", categories); renderCategories(); }
   }
   if (mode === "all" || mode === "orders") {
-    if (data.orders) { orders = data.orders; DB.set("orders", orders); }
+    if (data.orders) {
+      orders = data.orders;
+      if (ADMIN_AUTH_MODE) {
+        // Importa cada pedido como linha na tabela protegida
+        data.orders.forEach(o => {
+          _supabase.from('orders').upsert({ id: o.id, client_id: o.clientId || null, data: o })
+            .then(r => { if (r.error) console.error('order import error', r.error); });
+        });
+      } else DB.set("orders", orders);
+    }
     if (data.orderCounter !== undefined) { orderCounter = data.orderCounter; DB.set("orderCounter", orderCounter); }
   }
   if (mode === "all" || mode === "banners") {
@@ -3284,9 +3564,11 @@ function clearProductsOnly() {
   toast("Produtos apagados!", "info");
 }
 
-function clearOrdersOnly() {
+async function clearOrdersOnly() {
   if (!confirm("Apagar todos os pedidos?")) return;
-  orders = []; DB.set("orders", orders);
+  orders = [];
+  if (ADMIN_AUTH_MODE) await _supabase.from('orders').delete().neq('id', -1);
+  else DB.set("orders", orders);
   switchAdminTab("backup", document.querySelectorAll(".admin-tab")[8]);
   toast("Pedidos apagados!", "info");
 }
